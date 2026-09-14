@@ -122,7 +122,8 @@ export async function login(
     return ok({ redirectTo: "/login" });
   }
 
-  const { data: profile } = await supabase
+  const admin = createAdminClient();
+  const { data: profile } = await admin
     .from("profiles")
     .select("is_admin")
     .eq("id", user.id)
@@ -132,13 +133,26 @@ export async function login(
   if (profile?.is_admin) {
     redirectTo = "/admin";
   } else {
-    const { data: org } = await supabase
+    const { data: ownedOrg } = await admin
       .from("organisations")
       .select("id")
       .eq("owner_id", user.id)
       .limit(1)
       .maybeSingle();
-    redirectTo = org ? "/dashboard" : "/onboarding";
+
+    if (ownedOrg) {
+      redirectTo = "/dashboard";
+    } else {
+      const userEmail = (user.email ?? "").toLowerCase().trim();
+      const { data: member } = await admin
+        .from("organisation_members")
+        .select("id, organisation_id")
+        .or(`user_id.eq.${user.id},email.ilike.${userEmail}`)
+        .limit(1)
+        .maybeSingle();
+
+      redirectTo = member ? "/dashboard" : "/onboarding";
+    }
   }
 
   revalidatePath("/", "layout");

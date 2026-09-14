@@ -11,6 +11,7 @@ export const organisationCreateSchema = z.object({
     .min(2)
     .max(63)
     .regex(slugRegex, "Slug must be lowercase, numbers and hyphens only"),
+  industry: z.enum(["real_estate", "ecommerce", "general"]).default("real_estate").optional(),
 });
 
 export const organisationUpdateSchema = organisationCreateSchema.partial();

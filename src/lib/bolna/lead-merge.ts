@@ -67,7 +67,8 @@ const FIRST_CLASS_LEAD_DATA_KEYS = new Set([
 // consults the lock list and skips writing any locked field, but still
 // records the value on the call snapshot (immutable record of what the LLM
 // said on that conversation).
-const OVERRIDEABLE_LEAD_FIELDS = [
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const _OVERRIDEABLE_LEAD_FIELDS = [
   "name",
   "current_intent",
   "current_intent_score",

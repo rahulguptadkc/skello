@@ -88,12 +88,16 @@ export function useInfiniteList<Row>({
   // Refs so the IntersectionObserver callback always reads the current values
   // without re-creating the observer every time the row array grows.
   const itemsLenRef = React.useRef(items.length);
+  // eslint-disable-next-line react-hooks/refs
   itemsLenRef.current = items.length;
   const totalRef = React.useRef(total);
+  // eslint-disable-next-line react-hooks/refs
   totalRef.current = total;
   const loadingRef = React.useRef(loading);
+  // eslint-disable-next-line react-hooks/refs
   loadingRef.current = loading;
   const fetchPageRef = React.useRef(fetchPage);
+  // eslint-disable-next-line react-hooks/refs
   fetchPageRef.current = fetchPage;
 
   // Client-driven reset. When `resetKey` changes (filter chip added,

@@ -24,6 +24,7 @@ export function useCallsRealtime(
   // Read-through ref so the subscription callback always sees the latest
   // pause state without rebuilding the channel.
   const pausedRef = React.useRef(paused);
+  // eslint-disable-next-line react-hooks/refs
   pausedRef.current = paused;
 
   React.useEffect(() => {

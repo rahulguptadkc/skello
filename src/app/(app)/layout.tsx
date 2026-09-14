@@ -26,6 +26,7 @@ export default async function AppLayout({
     organisationName: session.organisation.name,
     organisationSlug: session.organisation.slug,
     uniqueLeadCount,
+    industry: session.organisation.industry,
   };
 
   return (

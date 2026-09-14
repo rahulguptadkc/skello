@@ -151,7 +151,7 @@ export function BolnaIntegrationForm({ organisationId, integration }: Props) {
           required
         />
         <p className="text-xs text-muted-foreground">
-          Copy from your voice agent provider's dashboard — the Agents
+          Copy from your voice agent provider&apos;s dashboard — the Agents
           section for the outbound agent.
         </p>
       </div>

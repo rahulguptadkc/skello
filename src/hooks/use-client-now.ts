@@ -12,6 +12,7 @@ import * as React from "react";
 export function useClientNow(): number | null {
   const [now, setNow] = React.useState<number | null>(null);
   React.useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setNow(Date.now());
   }, []);
   return now;

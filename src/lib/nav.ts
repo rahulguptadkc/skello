@@ -7,11 +7,15 @@ import {
   PackageCheckIcon,
   PlugZapIcon,
   RadioIcon,
+  ReceiptIcon,
   SettingsIcon,
   ShoppingCartIcon,
+  UserCheckIcon,
   UsersIcon,
   type LucideIcon,
 } from "lucide-react";
+
+import type { OrganisationIndustry } from "@/types/organisation";
 
 /**
  * The single description of the app's navigation.
@@ -39,117 +43,159 @@ export interface NavSection {
   items: readonly NavItem[];
 }
 
-export const NAV_SECTIONS: readonly NavSection[] = [
-  {
-    label: "Overview",
-    items: [
-      {
-        href: "/dashboard",
-        label: "Dashboard",
-        icon: LayoutGridIcon,
-        keywords: ["home", "overview", "stats"],
-      },
-      // /pulse is intentionally absent (route still exists and is reachable by
-      // deep-link). See docs/sitemap.md → Hidden routes.
-    ],
-  },
-  {
-    label: "Leads",
-    items: [
-      {
-        href: "/leads",
-        label: "Leads",
-        icon: UsersIcon,
-        badgeKey: "unique_leads",
-        keywords: ["contacts", "people", "customers", "crm"],
-      },
-      {
-        href: "/conversations",
-        label: "Conversations",
-        icon: MessageCircleIcon,
-        keywords: ["calls", "transcripts", "history"],
-      },
-    ],
-  },
-  {
+const OVERVIEW_SECTION: NavSection = {
+  label: "Overview",
+  items: [
+    {
+      href: "/dashboard",
+      label: "Dashboard",
+      icon: LayoutGridIcon,
+      keywords: ["home", "overview", "stats"],
+    },
+  ],
+};
+
+const LEADS_SECTION: NavSection = {
+  label: "Leads",
+  items: [
+    {
+      href: "/leads",
+      label: "Leads",
+      icon: UsersIcon,
+      badgeKey: "unique_leads",
+      keywords: ["contacts", "people", "customers", "crm"],
+    },
+    {
+      href: "/conversations",
+      label: "Conversations",
+      icon: MessageCircleIcon,
+      keywords: ["calls", "transcripts", "history"],
+    },
+  ],
+};
+
+const SYSTEM_SECTION: NavSection = {
+  label: "System",
+  items: [
+    {
+      href: "/integrations",
+      label: "Integrations",
+      icon: PlugZapIcon,
+      keywords: [
+        "google ads",
+        "whatsapp",
+        "99acres",
+        "webhook",
+        "lead capture",
+        "sources",
+        "shopify",
+        "connect",
+      ],
+    },
+    {
+      href: "/settings",
+      label: "Settings",
+      icon: SettingsIcon,
+      keywords: ["preferences", "workspace", "account", "team", "members", "roles"],
+    },
+    {
+      href: "/developer",
+      label: "Developer",
+      icon: CodeIcon,
+      keywords: ["api", "webhooks", "keys"],
+    },
+    {
+      href: "/billing",
+      label: "Billing",
+      icon: CreditCardIcon,
+      keywords: ["invoice", "plan", "subscription"],
+    },
+  ],
+};
+
+/** Build outreach nav items tailored to the tenant's industry */
+export function getOutreachSection(industry: OrganisationIndustry = "real_estate"): NavSection {
+  if (industry === "ecommerce") {
+    return {
+      label: "Outreach",
+      items: [
+        {
+          href: "/campaigns",
+          label: "Campaigns",
+          icon: RadioIcon,
+          keywords: ["outreach", "dial", "broadcast"],
+        },
+        {
+          href: "/campaigns/templates/cart-recovery",
+          label: "Cart Recovery",
+          icon: ShoppingCartIcon,
+          keywords: ["abandoned", "checkout", "shopify", "whatsapp"],
+        },
+        {
+          href: "/campaigns/templates/cod-confirmation",
+          label: "COD Confirmation",
+          icon: PackageCheckIcon,
+          keywords: ["cash on delivery", "orders", "confirm"],
+        },
+      ],
+    };
+  }
+
+  if (industry === "general") {
+    return {
+      label: "Outreach",
+      items: [
+        {
+          href: "/campaigns",
+          label: "Campaigns",
+          icon: RadioIcon,
+          keywords: ["outreach", "dial", "broadcast"],
+        },
+      ],
+    };
+  }
+
+  // Default: Real Estate
+  return {
     label: "Outreach",
-    // Three siblings, not a parent with two children. Cart Recovery and COD
-    // Confirmation are **independent engines** — their own settings, queues,
-    // tables and metrics — that merely happen to live under `/campaigns/…` in
-    // the URL. Nesting them implied they were views of a campaign, and cost
-    // them a level of prominence they hadn't earned less of.
     items: [
+      {
+        href: "/campaigns/templates/pre-sales",
+        label: "Pre-Sales",
+        icon: UserCheckIcon,
+        keywords: ["site visit", "qualification", "booking", "inbound leads"],
+      },
       {
         href: "/campaigns",
-        label: "Campaigns",
+        label: "Reactivate",
         icon: RadioIcon,
-        keywords: ["outreach", "dial", "broadcast"],
+        keywords: ["outreach", "dial", "broadcast", "campaigns", "cold leads", "reactivation"],
       },
       {
-        href: "/campaigns/templates/cart-recovery",
-        label: "Cart Recovery",
-        icon: ShoppingCartIcon,
-        keywords: ["abandoned", "checkout", "shopify", "whatsapp"],
-      },
-      {
-        href: "/campaigns/templates/cod-confirmation",
-        label: "COD Confirmation",
-        icon: PackageCheckIcon,
-        keywords: ["cash on delivery", "orders", "confirm"],
+        href: "/campaigns/templates/tranche-recovery",
+        label: "Tranche Recovery",
+        icon: ReceiptIcon,
+        keywords: ["milestones", "overdue", "installments", "collections", "payment", "post sales"],
       },
     ],
-  },
-  {
-    label: "System",
-    items: [
-      {
-        // Above Settings on purpose: this is where leads come FROM, which is
-        // operational, while Settings is workspace and account admin. They were
-        // the same page until the connection cards moved here.
-        href: "/integrations",
-        label: "Integrations",
-        icon: PlugZapIcon,
-        keywords: [
-          "google ads",
-          "whatsapp",
-          "99acres",
-          "webhook",
-          "lead capture",
-          "sources",
-          "shopify",
-          "connect",
-        ],
-      },
-      {
-        href: "/settings",
-        label: "Settings",
-        icon: SettingsIcon,
-        keywords: ["preferences", "workspace", "account"],
-      },
-      {
-        href: "/developer",
-        label: "Developer",
-        icon: CodeIcon,
-        keywords: ["api", "webhooks", "keys"],
-      },
-      {
-        href: "/billing",
-        label: "Billing",
-        icon: CreditCardIcon,
-        keywords: ["invoice", "plan", "subscription"],
-      },
-    ],
-  },
-];
+  };
+}
+
+/** Dynamic navigation builder based on the organisation's industry */
+export function getNavSections(industry: OrganisationIndustry = "real_estate"): readonly NavSection[] {
+  return [
+    OVERVIEW_SECTION,
+    LEADS_SECTION,
+    getOutreachSection(industry),
+    SYSTEM_SECTION,
+  ];
+}
+
+/** Default fallback for backwards compatibility */
+export const NAV_SECTIONS: readonly NavSection[] = getNavSections("real_estate");
 
 /**
  * The admin console's nav.
- *
- * Kept here so it shares `activeNavHref`'s longest-match-with-a-boundary rule
- * rather than carrying its own copy of the prefix test. It is deliberately
- * **not** part of `NAV_SECTIONS`: the ⌘K palette and the customer breadcrumb
- * default to that constant, and admin routes must not surface for a
- * non-admin.
  */
 export const ADMIN_NAV_SECTIONS: readonly NavSection[] = [
   {
@@ -185,16 +231,7 @@ function matches(pathname: string, href: string): boolean {
 }
 
 /**
- * The one nav entry a path belongs to — **longest match wins**.
- *
- * This is the fix for the old `pathname === href || pathname.startsWith(href)`
- * test, which lit up `/campaigns` *and* `/campaigns/templates/cart-recovery`
- * simultaneously, so the sidebar claimed you were in two places at once. It
- * also had no `/` boundary, so a future `/leads-archive` would have highlighted
- * `/leads`.
- *
- * The `/dashboard` special-case the old code needed is gone with it: that
- * existed only because a prefix test with no boundary made `/dashboard` greedy.
+ * The one nav entry a path belongs to — longest match wins.
  */
 export function activeNavHref(
   pathname: string,
@@ -218,11 +255,7 @@ export function isNavActive(
 }
 
 /**
- * True for the item *or any of its children*.
- *
- * The collapsed icon rail doesn't render children, so a rail using
- * `isNavActive` would highlight nothing at all on a cart-recovery page. This is
- * the rail's rule; expanded nav links use `isNavActive`.
+ * True for the item or any of its children.
  */
 export function isNavBranchActive(
   pathname: string,
@@ -242,13 +275,6 @@ export interface Crumb {
 
 /**
  * The nav ancestry of a path, root-first.
- *
- * Derived from `NAV_SECTIONS` rather than from URL segments, because the
- * segments lie: `/campaigns/templates/cart-recovery` would render a
- * "Templates" crumb pointing at a route that does not exist.
- *
- * Returns a single crumb for a top-level page. Callers are expected to skip
- * rendering at length < 2 — one crumb only repeats the page's own `<h1>`.
  */
 export function breadcrumbsFor(
   pathname: string,

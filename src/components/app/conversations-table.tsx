@@ -473,7 +473,6 @@ export function ConversationsTable({
                               <div className="text-xs font-medium text-muted-foreground">
                                 Recording · {shortCallId(call.id)}
                               </div>
-                              {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
                               <audio
                                 src={call.recording_url}
                                 controls

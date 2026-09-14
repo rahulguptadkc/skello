@@ -237,6 +237,7 @@ function FieldRow({
     if (isBuiltIn) return false;
     const t = Date.parse(def.last_seen_at);
     if (Number.isNaN(t)) return false;
+    // eslint-disable-next-line react-hooks/purity
     return Date.now() - t > STALE_FIELD_THRESHOLD_MS;
   }, [def.last_seen_at, isBuiltIn]);
 

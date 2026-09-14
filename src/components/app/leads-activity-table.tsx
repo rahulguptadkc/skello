@@ -291,14 +291,6 @@ export function LeadsActivityTable({
     () => catalog.filter((d) => d.filterable),
     [catalog],
   );
-  const sortableDefs = React.useMemo(
-    () =>
-      catalog
-        .filter((d) => d.sortable)
-        .slice()
-        .sort((a, b) => a.display_order - b.display_order),
-    [catalog],
-  );
 
   const wireFilters = React.useMemo(() => {
     const chips = filters

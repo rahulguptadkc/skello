@@ -79,11 +79,11 @@ export function UserMenu({
           </div>
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
-        <DropdownMenuItem>
-          <UserIcon /> Profile
-        </DropdownMenuItem>
-        <DropdownMenuItem>
+        <DropdownMenuItem render={<Link href="/settings" />}>
           <SettingsIcon /> Workspace settings
+        </DropdownMenuItem>
+        <DropdownMenuItem render={<Link href="/settings/team" />}>
+          <UserIcon /> Manage team
         </DropdownMenuItem>
 
         {/* Until now there was no `setTheme` call anywhere in the app, so the

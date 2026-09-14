@@ -2,23 +2,12 @@ import { redirect } from "next/navigation";
 
 import { Logo } from "@/components/brand/logo";
 import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { createOrganisation, listOrganisations } from "@/actions/organisations";
+import { OnboardingForm } from "@/components/forms/onboarding-form";
+import { listOrganisations } from "@/actions/organisations";
 import { getCurrentUser } from "@/actions/auth";
 import { getIsAdmin } from "@/lib/auth/admin";
 
 export const metadata = { title: "Set up workspace · Skelo" };
-
-function slugify(input: string): string {
-  return input
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 63);
-}
 
 export default async function OnboardingPage() {
   const user = await getCurrentUser();
@@ -30,17 +19,6 @@ export default async function OnboardingPage() {
   const orgsResult = await listOrganisations();
   if (orgsResult.success && orgsResult.data.length > 0) {
     redirect("/dashboard");
-  }
-
-  async function action(formData: FormData) {
-    "use server";
-    const name = String(formData.get("name") ?? "").trim();
-    if (!name) return;
-    const result = await createOrganisation({
-      name,
-      slug: `${slugify(name) || "workspace"}-${Date.now().toString(36).slice(-6)}`,
-    });
-    if (result.success) redirect("/dashboard");
   }
 
   return (
@@ -55,23 +33,11 @@ export default async function OnboardingPage() {
               Create your workspace
             </h1>
             <p className="text-sm leading-relaxed text-muted-foreground">
-              You don&apos;t have an organisation yet. Name it and we&apos;ll
-              spin one up.
+              You don&apos;t have an organisation yet. Choose your business type
+              and name it to spin one up.
             </p>
           </div>
-          <form action={action} className="grid gap-4">
-            <div className="grid gap-1.5">
-              <Label htmlFor="name">Workspace name</Label>
-              <Input
-                id="name"
-                name="name"
-                placeholder="Acme Inc."
-                required
-                maxLength={100}
-              />
-            </div>
-            <Button type="submit">Create workspace</Button>
-          </form>
+          <OnboardingForm />
         </Card>
       </main>
     </div>

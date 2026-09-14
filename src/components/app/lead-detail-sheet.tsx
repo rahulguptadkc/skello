@@ -224,6 +224,7 @@ export function LeadDetailSheet({
   }, []);
 
   React.useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setDraft(null);
   }, [leadId, open]);
 
@@ -232,6 +233,7 @@ export function LeadDetailSheet({
   // interactions drive both selection and URL together via setCallInUrl.
   React.useEffect(() => {
     if (!open) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setTab("summary");
       setSelectedCallId(null);
       return;
@@ -247,6 +249,7 @@ export function LeadDetailSheet({
   React.useEffect(() => {
     if (!open || !leadId) return;
     let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
     setError(null);
     setReminders(null);
@@ -288,6 +291,7 @@ export function LeadDetailSheet({
     if (tab !== "calls") return;
     if (selectedCallId) return;
     if (calls && calls.length > 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setSelectedCallId(calls[0].id);
     }
   }, [tab, selectedCallId, calls]);

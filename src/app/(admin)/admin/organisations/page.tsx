@@ -86,6 +86,9 @@ export default async function AdminOrganisationsPage({
                   Organisation
                 </th>
                 <th scope="col" className="px-3 py-3 font-medium">
+                  Type
+                </th>
+                <th scope="col" className="px-3 py-3 font-medium">
                   Owner
                 </th>
                 <th scope="col" className="px-3 py-3 font-medium">
@@ -116,6 +119,13 @@ export default async function AdminOrganisationsPage({
                           {org.slug}
                         </span>
                       </Link>
+                    </td>
+                    <td className="px-3 py-3">
+                      <Badge variant="outline" className="capitalize text-xs font-normal">
+                        {org.industry === "ecommerce"
+                          ? "E-Commerce"
+                          : "Real Estate"}
+                      </Badge>
                     </td>
                     <td className="px-3 py-3 text-muted-foreground">
                       <span className="block max-w-48 truncate">

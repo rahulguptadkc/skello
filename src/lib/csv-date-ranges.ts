@@ -6,6 +6,7 @@
 // "Last 30 days" means.
 
 export type ExportRangePreset =
+  | "last_24_hours"
   | "today"
   | "yesterday"
   | "last_7_days"
@@ -27,6 +28,7 @@ export interface ExportRangeOption {
 // sits next to "All time" because both are escape hatches from the
 // fixed-window presets above.
 export const EXPORT_RANGE_OPTIONS: ExportRangeOption[] = [
+  { value: "last_24_hours", label: "Last 24 hours", hint: "Rolling 24-hour window" },
   { value: "today", label: "Today", hint: "Since 00:00 local time" },
   { value: "yesterday", label: "Yesterday", hint: "Previous calendar day" },
   { value: "last_7_days", label: "Last 7 days", hint: "Rolling 7-day window" },
@@ -61,6 +63,8 @@ export function boundsForPreset(
   );
 
   switch (preset) {
+    case "last_24_hours":
+      return { from: new Date(now.getTime() - day).toISOString(), to: null };
     case "today":
       return { from: startOfToday.toISOString(), to: null };
     case "yesterday": {

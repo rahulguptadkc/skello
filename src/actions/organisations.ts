@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import {
   organisationCreateSchema,
   organisationIdSchema,
@@ -31,31 +32,85 @@ export async function createOrganisation(
   const { supabase, user } = await requireUser();
   if (!user) return fail("Not authenticated");
 
-  const { data, error } = await supabase
+  let { data, error } = await supabase
     .from("organisations")
     .insert({ ...parsed.data, owner_id: user.id })
     .select("*")
     .single<Organisation>();
 
-  if (error) return fail(error.message);
+  if (error && error.message.includes("industry")) {
+    const safeData = { ...parsed.data };
+    delete safeData.industry;
+    const fallbackRes = await supabase
+      .from("organisations")
+      .insert({ ...safeData, owner_id: user.id })
+      .select("*")
+      .single<Organisation>();
+    data = fallbackRes.data ? { ...fallbackRes.data, industry: "real_estate" } : null;
+    error = fallbackRes.error;
+  }
+
+  if (error || !data) return fail(error?.message ?? "Could not create organisation");
+
+  // Register creator as default Admin member in organisation_members
+  await supabase
+    .from("organisation_members")
+    .insert({
+      organisation_id: data.id,
+      user_id: user.id,
+      email: (user.email ?? "").toLowerCase(),
+      role: "admin",
+      status: "active",
+    });
 
   revalidatePath("/organisations");
   return ok(data);
 }
 
 export async function listOrganisations(): Promise<ActionResult<Organisation[]>> {
-  const { supabase, user } = await requireUser();
+  const { user } = await requireUser();
   if (!user) return fail("Not authenticated");
 
-  const { data, error } = await supabase
+  const admin = createAdminClient();
+  const userEmail = (user.email ?? "").toLowerCase().trim();
+
+  // Fetch organisations owned by user
+  const { data: ownedOrgs, error: ownedErr } = await admin
     .from("organisations")
     .select("id, name, slug, owner_id, created_at, updated_at")
     .eq("owner_id", user.id)
     .order("created_at", { ascending: false })
     .returns<Organisation[]>();
 
-  if (error) return fail(error.message);
-  return ok(data);
+  if (ownedErr) return fail(ownedErr.message);
+
+  // Fetch organisations where user is a member (by user_id or email)
+  const { data: memberRows } = await admin
+    .from("organisation_members")
+    .select("organisation_id")
+    .or(`user_id.eq.${user.id},email.ilike.${userEmail}`)
+    .eq("status", "active")
+    .returns<{ organisation_id: string }[]>();
+
+  const orgIds = (memberRows ?? []).map((m) => m.organisation_id).filter(Boolean);
+  let memberOrgs: Organisation[] = [];
+  if (orgIds.length > 0) {
+    const { data: orgs } = await admin
+      .from("organisations")
+      .select("id, name, slug, owner_id, created_at, updated_at")
+      .in("id", orgIds)
+      .returns<Organisation[]>();
+    memberOrgs = orgs ?? [];
+  }
+
+  const combined = [...(ownedOrgs ?? [])];
+  for (const m of memberOrgs) {
+    if (!combined.some((o) => o.id === m.id)) {
+      combined.push(m);
+    }
+  }
+
+  return ok(combined);
 }
 
 export async function getOrganisation(

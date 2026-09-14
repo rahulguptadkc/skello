@@ -18,7 +18,7 @@ export const dynamic = "force-dynamic";
 // "You'll download ~N rows" before the user commits. Uses Supabase's
 // `count: "exact", head: true` to avoid pulling row payloads — Postgres
 // runs the same WHERE clause but only returns the count.
-const EXPORT_CAP = 10_000;
+const EXPORT_CAP = 50_000;
 
 const isoDatetimeSchema = z.string().datetime({ offset: true });
 const countInputSchema = z.object({

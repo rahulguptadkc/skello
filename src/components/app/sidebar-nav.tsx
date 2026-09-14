@@ -17,17 +17,19 @@ import { Logo } from "@/components/brand/logo";
 import { useAppShell } from "@/components/app/app-shell";
 import { initialsOf } from "@/lib/format";
 import {
-  NAV_SECTIONS,
+  getNavSections,
   isNavActive,
   isNavBranchActive,
   type NavItem,
 } from "@/lib/nav";
+import type { OrganisationIndustry } from "@/types/organisation";
 import { cn } from "@/lib/utils";
 
 export interface SidebarNavProps {
   organisationName: string;
   organisationSlug: string;
   uniqueLeadCount: number;
+  industry?: OrganisationIndustry;
 }
 
 /**
@@ -46,6 +48,7 @@ export function SidebarNavBody({
   organisationName,
   organisationSlug,
   uniqueLeadCount,
+  industry,
   collapsed = false,
   onNavigate,
 }: SidebarNavProps & {
@@ -55,6 +58,7 @@ export function SidebarNavBody({
 }) {
   const pathname = usePathname();
   const [pending, startTransition] = useTransition();
+  const navSections = getNavSections(industry);
 
   function onLogout() {
     startTransition(async () => {
@@ -71,8 +75,13 @@ export function SidebarNavBody({
 
   return (
     <>
-      <div className={cn("py-5", collapsed ? "px-0 text-center" : "px-5")}>
-        <Logo tone="sidebar" showWordmark={!collapsed} />
+      <div className={cn("py-4", collapsed ? "px-0 text-center" : "px-5")}>
+        <Logo
+          tone="sidebar"
+          showWordmark={!collapsed}
+          industry={industry}
+          showSubtitle={!collapsed}
+        />
       </div>
 
       {/* Identity tile, not a bordered card. Collapsed, the monogram alone is
@@ -119,7 +128,7 @@ export function SidebarNavBody({
           chrome surface reads as unfinished. Inner scrollers (tables,
           transcripts) keep theirs — there, position feedback is worth the pixels. */}
       <nav className="no-scrollbar flex-1 overflow-y-auto px-2 pb-2">
-        {NAV_SECTIONS.map((section) => (
+        {navSections.map((section) => (
           <div
             key={section.label}
             className={cn(
@@ -143,8 +152,8 @@ export function SidebarNavBody({
                 // Collapsed hides children, so the rail highlights the whole
                 // branch — otherwise a cart-recovery page lights nothing at all.
                 const active = collapsed
-                  ? isNavBranchActive(pathname, item)
-                  : isNavActive(pathname, item.href);
+                  ? isNavBranchActive(pathname, item, navSections)
+                  : isNavActive(pathname, item.href, navSections);
                 const badge = badgeFor(item);
                 const Icon = item.icon;
 

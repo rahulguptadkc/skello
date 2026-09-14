@@ -21,11 +21,11 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Per-export row cap. A `limit(EXPORT_CAP + 1)` trick lets us detect
-// truncation in the same query rather than running a second count
-// roundtrip — anything past EXPORT_CAP is dropped before serialising and
-// the X-Export-Truncated header tells the dialog to surface a warning.
-const EXPORT_CAP = 10_000;
+// Per-export row cap. We paginate Supabase PostgREST in batches of BATCH_SIZE
+// (since PostgREST defaults to a 1,000 max-rows per-request limit) up to EXPORT_CAP
+// so that large datasets are fully exported without silent row truncations.
+const EXPORT_CAP = 50_000;
+const BATCH_SIZE = 1_000;
 
 // Backend contract: the frontend resolves a preset (or custom date inputs)
 // into concrete from/to ISO timestamps and posts them as query params.
@@ -199,41 +199,52 @@ export async function GET(request: NextRequest) {
     parsedInput.data;
 
   const supabase = await createClient();
-  // EXPORT_CAP + 1 fetched intentionally — the +1 is a sentinel row used
-  // only to set X-Export-Truncated. It's dropped before CSV serialisation
-  // so the user never sees it.
-  let query = supabase
-    .from("calls")
-    .select(CALL_COLUMNS)
-    .eq("organisation_id", session.organisation.id)
-    .order("started_at", { ascending: false })
-    .limit(EXPORT_CAP + 1);
+  const allCalls: CallRow[] = [];
+  let offset = 0;
+  let hasMore = true;
+  let truncated = false;
 
-  // applyCallFilters is the single source of truth for conversations table
-  // filters, also used by listConversations in actions/calls.ts. The date
-  // range and lead_id flow through the same helper.
-  query = applyCallFilters(query, {
-    from,
-    to,
-    direction,
-    status,
-    agent_id,
-    q,
-    lead_id,
-  });
+  while (hasMore) {
+    let query = supabase
+      .from("calls")
+      .select(CALL_COLUMNS)
+      .eq("organisation_id", session.organisation.id)
+      .order("started_at", { ascending: false })
+      .range(offset, offset + BATCH_SIZE - 1);
 
-  const { data, error } = await query.returns<CallRow[]>();
-  if (error) {
-    const message = logSkeloError("EXPORT", "Call export query failed", {
-      organisationId: session.organisation.id,
-      cause: error,
+    query = applyCallFilters(query, {
+      from,
+      to,
+      direction,
+      status,
+      agent_id,
+      q,
+      lead_id,
     });
-    return NextResponse.json({ error: message }, { status: 500 });
+
+    const { data, error } = await query.returns<CallRow[]>();
+    if (error) {
+      const message = logSkeloError("EXPORT", "Call export query failed", {
+        organisationId: session.organisation.id,
+        cause: error,
+      });
+      return NextResponse.json({ error: message }, { status: 500 });
+    }
+
+    const batch = data ?? [];
+    allCalls.push(...batch);
+
+    if (batch.length < BATCH_SIZE) {
+      hasMore = false;
+    } else if (allCalls.length >= EXPORT_CAP) {
+      hasMore = false;
+      truncated = true;
+    } else {
+      offset += BATCH_SIZE;
+    }
   }
 
-  const raw = data ?? [];
-  const truncated = raw.length > EXPORT_CAP;
-  const calls = truncated ? raw.slice(0, EXPORT_CAP) : raw;
+  const calls = truncated ? allCalls.slice(0, EXPORT_CAP) : allCalls;
 
   // Resolve agent labels in one round trip. Falls back to the raw agent_id
   // when no voice_agents row exists (e.g. a legacy / unregistered agent).

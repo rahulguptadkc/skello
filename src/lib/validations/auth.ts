@@ -13,6 +13,10 @@ export const signupSchema = z
       .trim()
       .min(2, "Organisation name must be at least 2 characters")
       .max(100, "Organisation name must be at most 100 characters"),
+    industry: z
+      .enum(["real_estate", "ecommerce", "general"])
+      .default("real_estate")
+      .optional(),
   })
   .refine((data) => data.password === data.confirmPassword, {
     message: "Passwords do not match",

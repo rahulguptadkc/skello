@@ -374,7 +374,7 @@ function RegisterDialog({
         <DialogHeader>
           <DialogTitle>Link a voice agent</DialogTitle>
           <DialogDescription>
-            Paste the agent id from your voice provider dashboard. We'll
+            Paste the agent id from your voice provider dashboard. We&apos;ll
             verify it before linking.
           </DialogDescription>
         </DialogHeader>
@@ -402,8 +402,8 @@ function RegisterDialog({
               autoComplete="off"
             />
             <p className="text-[11px] text-muted-foreground">
-              Shown in the agents list. Make it descriptive — "Renewal
-              nurture" reads better than the raw id.
+              Shown in the agents list. Make it descriptive &mdash; &ldquo;Renewal
+              nurture&rdquo; reads better than the raw id.
             </p>
           </div>
           <DialogFooter>

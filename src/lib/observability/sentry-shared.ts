@@ -37,14 +37,21 @@ function scrubBreadcrumb(breadcrumb: Breadcrumb): Breadcrumb | null {
   }
 }
 
+export function isValidSentryDsn(dsn: string | undefined): boolean {
+  if (!dsn || typeof dsn !== "string") return false;
+  return dsn.startsWith("http://") || dsn.startsWith("https://");
+}
+
 // Options common to the server, edge, and client runtimes. `dsn` differs per
 // runtime (server reads SENTRY_DSN; the browser needs the NEXT_PUBLIC_ copy), so
-// the caller passes it in. With no DSN, `enabled: false` makes init a hard no-op
-// — Sentry stays completely dormant until a DSN is provided.
+// the caller passes it in. With no valid DSN or non-production environment,
+// `enabled: false` makes init a hard no-op — Sentry stays completely dormant.
 export function sharedSentryOptions(dsn: string | undefined) {
+  const isValid = isValidSentryDsn(dsn);
+  const isProduction = process.env.NODE_ENV === "production";
   return {
-    dsn,
-    enabled: Boolean(dsn),
+    dsn: isValid ? dsn : undefined,
+    enabled: isProduction && isValid,
     environment: process.env.SENTRY_ENVIRONMENT ?? process.env.NODE_ENV,
     // Errors are the goal — performance tracing stays off (0) unless explicitly
     // dialled up, keeping overhead and event quota low.

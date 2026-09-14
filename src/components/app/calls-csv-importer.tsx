@@ -554,7 +554,7 @@ function PreviewCard({
                 <th className="px-3 py-2 text-left font-medium">Issues</th>
               </DataTableHead>
               <tbody>
-                {sample.map((r) => {
+                {sample.map((r, i) => {
                   // Count fields across every category, not just lead_data.
                   // A 3-key lead_data + 2-key finance row shows "5 fields".
                   let fieldCount = 0;
@@ -562,7 +562,7 @@ function PreviewCard({
                     fieldCount += Object.keys(fields).length;
                   }
                   return (
-                  <tr key={r.payload.id || Math.random()} className="border-t border-border/40">
+                  <tr key={r.payload.id || `row-${i}`} className="border-t border-border/40">
                     <td className="px-3 py-2 font-mono text-[11px]">
                       {r.payload.id || (
                         <span className="text-destructive">missing</span>
