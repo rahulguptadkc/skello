@@ -133,7 +133,7 @@ export async function updateWhatsAppAdmin(
 }
 
 // Non-empty sample values for every recovery variable the template adapter may
-// read — across ALL layouts (classic, coupon_link, rakhi_offer). All fields are populated
+// read — across ALL layouts (classic, coupon_link, rakhi_offer, maisha_tiered_offer). All fields are populated
 // so a test send exercises the real template (name + language + parameter count)
 // without tripping Meta's empty-param 400 — a rejection here therefore points at
 // a genuine template mismatch. Keys must stay in sync with

@@ -407,8 +407,9 @@ will match what shoppers get.
 | `classic` | 6 | `customer_name`, `top_product`, `cart_total`, `discounted_cart_total`, `discount_code`, `discount_link` | one coupon code, quoted with the discounted total |
 | `coupon_link` (default) | 4 | `customer_name`, `top_product`, `store_name`, `discount_link` | one coupon, pre-applied by the link — never named in the copy |
 | `rakhi_offer` | 4 | `customer_name`, `top_product`, `cart_total`, `discount_link` | **tiered ladder** — Buy 1 / 2 / 3 → 15% / 25% / 35%, static copy in the approved body |
+| `maisha_tiered_offer` | 4 | `customer_name`, `top_product`, `cart_total`, `discount_link` | **tiered ladder** — Buy 1 / 2 / 3 → 10% / 20% / 30% (MAISHA10/20/30), static copy in the approved body |
 
-**`rakhi_offer` carries no `discount_code` and no `discounted_cart_total`, and
+**`rakhi_offer` and `maisha_tiered_offer` carry no `discount_code` and no `discounted_cart_total`, and
 that is not an omission.** The saving depends on how many items the shopper ends
 up adding, which is unknowable at send time, so quoting one number would be a
 promise we can't keep. The tiers are baked into the Meta body instead — which

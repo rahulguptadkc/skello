@@ -130,6 +130,35 @@ export const RECOVERY_TEMPLATE_LAYOUTS: Record<
       "Happy Shopping!",
     ].join("\n"),
   },
+  maisha_tiered_offer: {
+    label: "Maisha offer (tiered)",
+    description:
+      "Cart reminder with the Buy 1/2/3 Maisha discount ladder (MAISHA10/20/30) and a checkout link (4 variables).",
+    variableOrder: [
+      "customer_name",
+      "top_product",
+      "cart_total",
+      "discount_link",
+    ],
+    previewBody: [
+      "Hi {{1}} 👋",
+      "",
+      "You left {{2}} in your cart - ₹{{3}} worth of goodies still waiting for you.",
+      "",
+      "🛍️ Up to 30% OFF is waiting for you:",
+      "Buy 1 → 10% OFF | MAISHA10",
+      "Buy 2 → 20% OFF | MAISHA20",
+      "Buy 3 → 30% OFF | MAISHA30",
+      "",
+      "🚚 FREE shipping on orders above ₹1,000",
+      "",
+      "Stock up and save big - the perfect excuse to add one more 🎁",
+      "",
+      "Complete your order here 👉 {{4}}",
+      "",
+      "Happy Shopping! 🛍️",
+    ].join("\n"),
+  },
 };
 
 // Every layout key, as a non-empty tuple so Zod schemas and the DB check

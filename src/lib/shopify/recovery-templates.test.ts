@@ -60,6 +60,10 @@ describe("layoutRequiresOffer", () => {
     expect(layoutRequiresOffer("rakhi_offer")).toBe(false);
   });
 
+  it("is false for maisha_tiered_offer — the tiers are static template copy", () => {
+    expect(layoutRequiresOffer("maisha_tiered_offer")).toBe(false);
+  });
+
   it("does not count discount_link, which works with no offer at all", () => {
     expect(layoutRequiresOffer("coupon_link")).toBe(false);
   });
@@ -118,6 +122,15 @@ describe("buildRecoveryTemplatePreview", () => {
     expect(body).toContain("/apps/skelo/r/");
   });
 
+  it("shows the whole Maisha ladder and the checkout link", () => {
+    const { body } = buildRecoveryTemplatePreview("maisha_tiered_offer");
+    expect(body).toContain("Buy 1 → 10% OFF | MAISHA10");
+    expect(body).toContain("Buy 2 → 20% OFF | MAISHA20");
+    expect(body).toContain("Buy 3 → 30% OFF | MAISHA30");
+    expect(body).toContain("₹2499");
+    expect(body).toContain("/apps/skelo/r/");
+  });
+
   it("never puts a coupon code in the tiered message", () => {
     // The ladder replaces the coupon. Leaking a configured code here would
     // promise a discount the approved body doesn't grant.
@@ -128,6 +141,17 @@ describe("buildRecoveryTemplatePreview", () => {
       discountKind: "percentage",
     });
     expect(body).not.toContain("COMEBACK20");
+
+    const { body: maishaBody } = buildRecoveryTemplatePreview(
+      "maisha_tiered_offer",
+      {
+        offerType: "discount_code",
+        offerCode: "COMEBACK20",
+        discountValue: 20,
+        discountKind: "percentage",
+      },
+    );
+    expect(maishaBody).not.toContain("COMEBACK20");
   });
 
   it("uses the operator's live offer in layouts that quote one", () => {

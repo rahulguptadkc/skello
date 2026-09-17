@@ -183,16 +183,22 @@ describe("template layout contract", () => {
     expect(RECOVERY_TEMPLATE_LAYOUTS.classic.variableOrder).toHaveLength(6);
     expect(RECOVERY_TEMPLATE_LAYOUTS.coupon_link.variableOrder).toHaveLength(4);
     expect(RECOVERY_TEMPLATE_LAYOUTS.rakhi_offer.variableOrder).toHaveLength(4);
+    expect(RECOVERY_TEMPLATE_LAYOUTS.maisha_tiered_offer.variableOrder).toHaveLength(4);
   });
 
-  it("keeps rakhi_offer free of coupon variables", () => {
+  it("keeps rakhi_offer and maisha_tiered_offer free of coupon variables", () => {
     // The tiered ladder has no single code to quote and no knowable discounted
     // total (the saving depends on how many items the shopper adds). Ordering
     // one would send a blank — "-" after sanitisation — into the body.
-    const order = RECOVERY_TEMPLATE_LAYOUTS.rakhi_offer.variableOrder;
-    expect(order).not.toContain("discount_code");
-    expect(order).not.toContain("discounted_cart_total");
-    expect(order).toContain("cart_total");
+    for (const layout of [
+      RECOVERY_TEMPLATE_LAYOUTS.rakhi_offer,
+      RECOVERY_TEMPLATE_LAYOUTS.maisha_tiered_offer,
+    ]) {
+      const order = layout.variableOrder;
+      expect(order).not.toContain("discount_code");
+      expect(order).not.toContain("discounted_cart_total");
+      expect(order).toContain("cart_total");
+    }
   });
 
   it("speaks the customer's first name only", () => {
