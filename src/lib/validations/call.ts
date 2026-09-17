@@ -29,7 +29,7 @@ export const callSortDirSchema = z.enum(["asc", "desc"]);
 
 export const callListSchema = z.object({
   organisation_id: z.string().uuid(),
-  limit: z.number().int().min(1).max(500).default(50),
+  limit: z.number().int().min(1).max(1000).default(50),
   offset: z.number().int().min(0).default(0),
   lead_id: z.string().uuid().optional(),
   // When set, restrict to calls placed for this campaign's contacts. The

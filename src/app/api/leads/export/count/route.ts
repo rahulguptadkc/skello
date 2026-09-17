@@ -18,7 +18,7 @@ export const dynamic = "force-dynamic";
 //
 // Returns the cap alongside the count so the client can format messaging
 // without hard-coding the value on both sides.
-const EXPORT_CAP = 10_000;
+const EXPORT_CAP = 50_000;
 
 const isoDatetimeSchema = z.string().datetime({ offset: true });
 const filtersJsonSchema = z

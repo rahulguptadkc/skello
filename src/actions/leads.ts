@@ -133,29 +133,36 @@ async function fetchLatestCallSnapshots(
   const out = new Map<string, LatestCallSnapshot>();
   if (leadIds.length === 0) return out;
   const admin = createAdminClient();
-  const { data } = await admin
-    .from("calls")
-    .select("lead_id, summary, actionable, recording_url, started_at")
-    .eq("organisation_id", organisationId)
-    .in("lead_id", leadIds)
-    // Admin client bypasses RLS; exclude soft-deleted calls so a hidden
-    // campaign dial can't surface as a still-visible lead's latest snapshot.
-    .is("deleted_at", null)
-    .order("started_at", { ascending: false });
-  for (const row of (data ?? []) as Array<{
-    lead_id: string;
-    summary: string | null;
-    actionable: string | null;
-    recording_url: string | null;
-  }>) {
-    if (!out.has(row.lead_id)) {
-      out.set(row.lead_id, {
-        summary: row.summary,
-        actionable: row.actionable,
-        recording_url: row.recording_url,
-      });
+  const CHUNK_SIZE = 500;
+
+  for (let i = 0; i < leadIds.length; i += CHUNK_SIZE) {
+    const chunk = leadIds.slice(i, i + CHUNK_SIZE);
+    const { data } = await admin
+      .from("calls")
+      .select("lead_id, summary, actionable, recording_url, started_at")
+      .eq("organisation_id", organisationId)
+      .in("lead_id", chunk)
+      // Admin client bypasses RLS; exclude soft-deleted calls so a hidden
+      // campaign dial can't surface as a still-visible lead's latest snapshot.
+      .is("deleted_at", null)
+      .order("started_at", { ascending: false });
+
+    for (const row of (data ?? []) as Array<{
+      lead_id: string;
+      summary: string | null;
+      actionable: string | null;
+      recording_url: string | null;
+    }>) {
+      if (!out.has(row.lead_id)) {
+        out.set(row.lead_id, {
+          summary: row.summary,
+          actionable: row.actionable,
+          recording_url: row.recording_url,
+        });
+      }
     }
   }
+
   return out;
 }
 

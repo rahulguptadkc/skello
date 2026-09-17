@@ -46,7 +46,7 @@ interface CountState {
 const DEFAULT_COUNT_STATE: CountState = {
   filtered: null,
   all: null,
-  cap: 10_000,
+  cap: 50_000,
 };
 
 export function LeadExportDialog({

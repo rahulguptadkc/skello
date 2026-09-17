@@ -491,17 +491,22 @@ async function attachBestDispositions(
   const ranking = await loadOutcomeRanking(supabase, organisationId);
   if (ranking.size === 0) return rows;
 
-  // Every outcome-bearing call for the page's contacts (bounded by
-  // attempts × contacts), so "best so far" reflects all attempts.
-  const { data: outcomeRows } = await supabase
-    .from("calls")
-    .select("campaign_contact_id, call_outcome")
-    .in("campaign_contact_id", contactIds)
-    .not("call_outcome", "is", null)
-    .returns<{ campaign_contact_id: string; call_outcome: string }[]>();
+  const CHUNK_SIZE = 500;
+  const outcomeRows: { campaign_contact_id: string; call_outcome: string }[] = [];
+
+  for (let i = 0; i < contactIds.length; i += CHUNK_SIZE) {
+    const chunk = contactIds.slice(i, i + CHUNK_SIZE);
+    const { data } = await supabase
+      .from("calls")
+      .select("campaign_contact_id, call_outcome")
+      .in("campaign_contact_id", chunk)
+      .not("call_outcome", "is", null)
+      .returns<{ campaign_contact_id: string; call_outcome: string }[]>();
+    if (data) outcomeRows.push(...data);
+  }
 
   const occurredByContact = new Map<string, Set<string>>();
-  for (const row of outcomeRows ?? []) {
+  for (const row of outcomeRows) {
     const set =
       occurredByContact.get(row.campaign_contact_id) ?? new Set<string>();
     set.add(row.call_outcome);

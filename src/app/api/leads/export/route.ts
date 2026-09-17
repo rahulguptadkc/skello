@@ -18,11 +18,10 @@ import { createClient } from "@/lib/supabase/server";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Per-export row cap. We fetch CAP+1 from the RPC and use the +1 sentinel
-// to flag truncation — same trick as the calls export route — so the
-// dialog can warn that the filter still has more matches than this file
-// contains.
-const EXPORT_CAP = 10_000;
+// Per-export row cap. We paginate Supabase PostgREST in batches
+// (since PostgREST defaults to a 1,000 max-rows per-request limit) up to EXPORT_CAP
+// so that large datasets are fully exported without silent row truncations.
+const EXPORT_CAP = 50_000;
 
 // Backend contract: the frontend resolves a preset (or custom date inputs)
 // into concrete from/to ISO timestamps and posts them as query params.
@@ -308,38 +307,60 @@ async function fetchLatestCallSnapshots(
   const out = new Map<string, CallSnapshot>();
   if (leadIds.length === 0) return out;
   const supabase = await createClient();
-  const { data, error } = await supabase
-    .from("calls")
-    .select(
-      "lead_id, interest, summary, actionable, customer_status, visit_scheduled_at, started_at",
-    )
-    .eq("organisation_id", organisationId)
-    .in("lead_id", leadIds)
-    .order("started_at", { ascending: false });
-  if (error) {
-    logSkeloError("EXPORT", "Latest-call snapshot fetch failed (CSV will omit snapshot columns)", {
-      organisationId,
-      cause: error,
-    });
-    return out;
-  }
-  for (const row of (data ?? []) as Array<{
-    lead_id: string;
-    interest: string | null;
-    summary: string | null;
-    actionable: string | null;
-    customer_status: string | null;
-    visit_scheduled_at: string | null;
-  }>) {
-    if (!out.has(row.lead_id)) {
-      out.set(row.lead_id, {
-        interest: row.interest,
-        summary: row.summary,
-        actionable: row.actionable,
-        customer_status: row.customer_status,
-        visit_scheduled_at: row.visit_scheduled_at,
-      });
+  const CHUNK_SIZE = 500;
+  const BATCH_SIZE = 1_000;
+
+  for (let i = 0; i < leadIds.length; i += CHUNK_SIZE) {
+    const chunk = leadIds.slice(i, i + CHUNK_SIZE);
+    let offset = 0;
+    let hasMore = true;
+
+    while (hasMore) {
+      const { data, error } = await supabase
+        .from("calls")
+        .select(
+          "lead_id, interest, summary, actionable, customer_status, visit_scheduled_at, started_at",
+        )
+        .eq("organisation_id", organisationId)
+        .in("lead_id", chunk)
+        .order("started_at", { ascending: false })
+        .range(offset, offset + BATCH_SIZE - 1);
+
+      if (error) {
+        logSkeloError("EXPORT", "Latest-call snapshot fetch failed", {
+          organisationId,
+          cause: error,
+        });
+        break;
+      }
+
+      const rows = data ?? [];
+      for (const row of rows as Array<{
+        lead_id: string;
+        interest: string | null;
+        summary: string | null;
+        actionable: string | null;
+        customer_status: string | null;
+        visit_scheduled_at: string | null;
+      }>) {
+        if (!out.has(row.lead_id)) {
+          out.set(row.lead_id, {
+            interest: row.interest,
+            summary: row.summary,
+            actionable: row.actionable,
+            customer_status: row.customer_status,
+            visit_scheduled_at: row.visit_scheduled_at,
+          });
+        }
+      }
+
+      if (rows.length < BATCH_SIZE) {
+        hasMore = false;
+      } else {
+        offset += BATCH_SIZE;
+      }
     }
   }
+
   return out;
 }
