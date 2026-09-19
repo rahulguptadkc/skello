@@ -373,6 +373,8 @@ export function LeadsActivityTable({
     hasMore,
     pagedBeyondInitial,
     sentinelRef,
+    updateItem,
+    removeItem,
   } = useInfiniteList<LeadWithCallActivity>({
     initialItems: rows,
     initialTotal: total,
@@ -422,62 +424,73 @@ export function LeadsActivityTable({
     setDetailLeadId(next.id);
   }
 
-  function openWhatsApp(lead: Lead) {
+  const openWhatsApp = React.useCallback((lead: Lead) => {
     setWaLead(lead);
     setWaOpen(true);
-  }
-  function openReminder(lead: Lead) {
+  }, []);
+
+  const openReminder = React.useCallback((lead: Lead) => {
     setReminderLead(lead);
     setReminderOpen(true);
-  }
-  function openDetail(lead: Lead) {
+  }, []);
+
+  const openDetail = React.useCallback((lead: Lead) => {
     setDetailLeadId(lead.id);
     setDetailOpen(true);
-  }
-  function onTogglePendingAction(lead: Lead) {
-    setPendingLeadId(lead.id);
+  }, []);
+
+  const onTogglePendingAction = React.useCallback((lead: Lead) => {
+    const prevPending = Boolean(lead.pending_action);
+    const nextPending = !prevPending;
+
+    // Optimistic local update: instant 0ms UI feedback
+    updateItem(
+      (item) => item.id === lead.id,
+      { pending_action: nextPending },
+    );
+
     startTransition(async () => {
       const result = await toggleLeadPendingAction(lead.id);
-      setPendingLeadId(null);
       if (!result.success) {
+        // Revert on failure
+        updateItem(
+          (item) => item.id === lead.id,
+          { pending_action: prevPending },
+        );
         toast.error(result.error);
-        return;
       }
-      router.refresh();
     });
-  }
-  function onDelete(lead: Lead) {
+  }, [updateItem]);
+
+  const onDelete = React.useCallback((lead: Lead) => {
     if (!confirm("Delete this lead? This can't be undone.")) return;
-    setPendingLeadId(lead.id);
+    // Optimistic removal: 0ms UI feedback
+    removeItem((item) => item.id === lead.id);
+    if (detailLeadId === lead.id) setDetailOpen(false);
+    toast.success("Lead removed");
+
     startTransition(async () => {
       const result = await deleteLead(lead.id);
-      setPendingLeadId(null);
       if (!result.success) {
         toast.error(result.error);
-        return;
+        router.refresh();
       }
-      toast.success("Lead removed");
-      if (detailLeadId === lead.id) setDetailOpen(false);
-      router.refresh();
     });
-  }
-  function onCall(lead: Lead) {
+  }, [detailLeadId, removeItem, router]);
+
+  const onCall = React.useCallback((lead: Lead) => {
     if (!lead.phone) {
       toast.error("No phone on file");
       return;
     }
-    setPendingLeadId(lead.id);
+    toast.success(`Calling ${lead.name ?? "lead"}…`);
     startTransition(async () => {
       const result = await initiateCall({ lead_id: lead.id });
-      setPendingLeadId(null);
       if (!result.success) {
         toast.error(result.error);
-        return;
       }
-      toast.success(`Calling ${lead.name ?? "lead"}…`);
-      router.refresh();
     });
-  }
+  }, []);
 
   function onSearchSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -637,103 +650,20 @@ export function LeadsActivityTable({
                 </th>
               </DataTableHead>
               <tbody className="divide-y divide-border/60">
-                {items.map((row) => {
-                  const isPending = pending && pendingLeadId === row.id;
-                  const hasPhone = Boolean(row.phone);
-
-                  return (
-                    <tr
-                      key={row.id}
-                      role="button"
-                      tabIndex={0}
-                      aria-label={`Open details for ${row.name ?? "lead"}`}
-                      onClick={() => openDetail(row)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          openDetail(row);
-                        }
-                      }}
-                      className="group cursor-pointer align-top transition-colors hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none"
-                    >
-                      <td className="px-4 py-4">
-                        <div className="flex items-start gap-2.5">
-                          <EntityAvatar name={row.name} />
-                          <div className="min-w-0 flex-1">
-                            <p className="truncate text-sm font-medium leading-tight">
-                              {row.name ?? "Unnamed"}
-                            </p>
-                            {hasPhone ? (
-                              <a
-                                href={`tel:${row.phone}`}
-                                onClick={(e) => e.stopPropagation()}
-                                className="mt-0.5 inline-flex items-center gap-1.5 font-mono text-xs tabular-nums text-muted-foreground transition-colors hover:text-foreground"
-                              >
-                                <PhoneIcon className="size-3 shrink-0" />
-                                {row.phone}
-                              </a>
-                            ) : (
-                              <span className="mt-0.5 inline-flex items-center gap-1.5 text-xs italic text-muted-foreground">
-                                <PhoneIcon className="size-3 shrink-0" />
-                                No phone
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      </td>
-                      {visibleColumns.map((def) => (
-                        <ColumnCell
-                          key={def.id}
-                          def={def}
-                          row={row}
-                          now={now}
-                          pendingBusy={isPending}
-                          onTogglePending={() => onTogglePendingAction(row)}
-                        />
-                      ))}
-                      <td
-                        className="px-5 py-4"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <div className="flex items-center justify-end gap-1.5">
-                          <Button
-                            size="icon-sm"
-                            variant="ghost"
-                            onClick={() => onCall(row)}
-                            disabled={isPending || !hasPhone}
-                            aria-label="Call"
-                            title={
-                              hasPhone ? "Place a call" : "No phone on file"
-                            }
-                          >
-                            <PhoneIcon />
-                          </Button>
-                          <Button
-                            size="icon-sm"
-                            variant="ghost"
-                            onClick={() => openWhatsApp(row)}
-                            disabled={!hasPhone}
-                            aria-label="WhatsApp"
-                            title={
-                              hasPhone ? "Open WhatsApp" : "No phone on file"
-                            }
-                          >
-                            <WhatsAppIcon className="size-4" />
-                          </Button>
-                          <Button
-                            size="icon-sm"
-                            variant="ghost"
-                            onClick={() => openReminder(row)}
-                            aria-label="Remind"
-                            title="Schedule a reminder"
-                          >
-                            <BellPlusIcon />
-                          </Button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
+                {items.map((row) => (
+                  <LeadTableRow
+                    key={row.id}
+                    row={row}
+                    visibleColumns={visibleColumns}
+                    now={now}
+                    isPending={pending && pendingLeadId === row.id}
+                    onOpenDetail={openDetail}
+                    onTogglePendingAction={onTogglePendingAction}
+                    onCall={onCall}
+                    onOpenWhatsApp={openWhatsApp}
+                    onOpenReminder={openReminder}
+                  />
+                ))}
               </tbody>
             </table>
           </div>
@@ -748,37 +678,43 @@ export function LeadsActivityTable({
         sentinelRef={sentinelRef}
       />
 
-      <WhatsAppDialog
-        key={waLead?.id ?? "wa-empty"}
-        lead={waLead}
-        open={waOpen}
-        onOpenChange={setWaOpen}
-      />
-      <ReminderDialog
-        organisationId={organisationId}
-        leadId={reminderLead?.id}
-        leadName={reminderLead?.name}
-        open={reminderOpen}
-        onOpenChange={setReminderOpen}
-      />
-      <LeadDetailSheet
-        lead={detailLead}
-        organisationId={organisationId}
-        catalog={catalog}
-        bindings={bindings}
-        onPrev={() => stepDetail(-1)}
-        onNext={() => stepDetail(1)}
-        prevDisabled={detailIndex <= 0}
-        nextDisabled={detailIndex < 0 || detailIndex >= items.length - 1}
-        open={detailOpen}
-        onOpenChange={setDetailOpen}
-        pending={pending}
-        onCall={onCall}
-        onOpenWhatsApp={openWhatsApp}
-        onOpenReminder={openReminder}
-        onToggleContacted={onTogglePendingAction}
-        onDelete={onDelete}
-      />
+      {waOpen ? (
+        <WhatsAppDialog
+          key={waLead?.id ?? "wa-empty"}
+          lead={waLead}
+          open={waOpen}
+          onOpenChange={setWaOpen}
+        />
+      ) : null}
+      {reminderOpen ? (
+        <ReminderDialog
+          organisationId={organisationId}
+          leadId={reminderLead?.id}
+          leadName={reminderLead?.name}
+          open={reminderOpen}
+          onOpenChange={setReminderOpen}
+        />
+      ) : null}
+      {detailOpen ? (
+        <LeadDetailSheet
+          lead={detailLead}
+          organisationId={organisationId}
+          catalog={catalog}
+          bindings={bindings}
+          onPrev={() => stepDetail(-1)}
+          onNext={() => stepDetail(1)}
+          prevDisabled={detailIndex <= 0}
+          nextDisabled={detailIndex < 0 || detailIndex >= items.length - 1}
+          open={detailOpen}
+          onOpenChange={setDetailOpen}
+          pending={pending}
+          onCall={onCall}
+          onOpenWhatsApp={openWhatsApp}
+          onOpenReminder={openReminder}
+          onToggleContacted={onTogglePendingAction}
+          onDelete={onDelete}
+        />
+      ) : null}
     </>
   );
 }
@@ -1004,6 +940,124 @@ function columnLabel(def: LeadFieldDefinition): React.ReactNode {
   }
   return def.label ?? humaniseFieldKey(def.key_path);
 }
+
+interface LeadTableRowProps {
+  row: LeadWithCallActivity;
+  visibleColumns: LeadFieldDefinition[];
+  now: number | null;
+  isPending: boolean;
+  onOpenDetail: (row: LeadWithCallActivity) => void;
+  onTogglePendingAction: (row: LeadWithCallActivity) => void;
+  onCall: (row: LeadWithCallActivity) => void;
+  onOpenWhatsApp: (row: LeadWithCallActivity) => void;
+  onOpenReminder: (row: LeadWithCallActivity) => void;
+}
+
+const LeadTableRow = React.memo(function LeadTableRow({
+  row,
+  visibleColumns,
+  now,
+  isPending,
+  onOpenDetail,
+  onTogglePendingAction,
+  onCall,
+  onOpenWhatsApp,
+  onOpenReminder,
+}: LeadTableRowProps) {
+  const hasPhone = Boolean(row.phone);
+
+  return (
+    <tr
+      role="button"
+      tabIndex={0}
+      aria-label={`Open details for ${row.name ?? "lead"}`}
+      onClick={() => onOpenDetail(row)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onOpenDetail(row);
+        }
+      }}
+      className="group cursor-pointer align-top transition-colors hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none"
+    >
+      <td className="px-4 py-4">
+        <div className="flex items-start gap-2.5">
+          <EntityAvatar name={row.name} />
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-medium leading-tight">
+              {row.name ?? "Unnamed"}
+            </p>
+            {hasPhone ? (
+              <a
+                href={`tel:${row.phone}`}
+                onClick={(e) => e.stopPropagation()}
+                className="mt-0.5 inline-flex items-center gap-1.5 font-mono text-xs tabular-nums text-muted-foreground transition-colors hover:text-foreground"
+              >
+                <PhoneIcon className="size-3 shrink-0" />
+                {row.phone}
+              </a>
+            ) : (
+              <span className="mt-0.5 inline-flex items-center gap-1.5 text-xs italic text-muted-foreground">
+                <PhoneIcon className="size-3 shrink-0" />
+                No phone
+              </span>
+            )}
+          </div>
+        </div>
+      </td>
+      {visibleColumns.map((def) => (
+        <ColumnCell
+          key={def.id}
+          def={def}
+          row={row}
+          now={now}
+          pendingBusy={isPending}
+          onTogglePending={() => onTogglePendingAction(row)}
+        />
+      ))}
+      <td
+        className="px-5 py-4"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-end gap-1.5">
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            onClick={() => onCall(row)}
+            disabled={isPending || !hasPhone}
+            aria-label="Call"
+            title={
+              hasPhone ? "Place a call" : "No phone on file"
+            }
+          >
+            <PhoneIcon />
+          </Button>
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            onClick={() => onOpenWhatsApp(row)}
+            disabled={!hasPhone}
+            aria-label="WhatsApp"
+            title={
+              hasPhone ? "Open WhatsApp" : "No phone on file"
+            }
+          >
+            <WhatsAppIcon className="size-4" />
+          </Button>
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            onClick={() => onOpenReminder(row)}
+            aria-label="Remind"
+            title="Schedule a reminder"
+          >
+            <BellPlusIcon />
+          </Button>
+        </div>
+      </td>
+    </tr>
+  );
+});
 
 function ColumnHeader({
   def,

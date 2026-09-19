@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 
 import { createClient } from "@/lib/supabase/client";
 
-const REFRESH_DEBOUNCE_MS = 350;
+const REFRESH_DEBOUNCE_MS = 1000;
 
 /**
  * Subscribe to call changes for one organisation and trigger a server
@@ -37,7 +37,9 @@ export function useCallsRealtime(
       if (pausedRef.current) return;
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
-        router.refresh();
+        React.startTransition(() => {
+          router.refresh();
+        });
       }, REFRESH_DEBOUNCE_MS);
     }
 

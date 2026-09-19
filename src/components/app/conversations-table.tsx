@@ -240,10 +240,10 @@ export function ConversationsTable({
     React.useState<CallWithLead | null>(null);
   const [transcriptOpen, setTranscriptOpen] = React.useState(false);
 
-  function openTranscript(call: CallWithLead) {
+  const openTranscript = React.useCallback((call: CallWithLead) => {
     setTranscriptCall(call);
     setTranscriptOpen(true);
-  }
+  }, []);
 
   if (items.length === 0) {
     return (
@@ -353,151 +353,14 @@ export function ConversationsTable({
               </th>
             </DataTableHead>
             <tbody className="divide-y divide-border/60">
-              {items.map((call) => {
-                const inbound = call.direction === "inbound";
-                const counterparty = inbound ? call.from_phone : call.to_phone;
-                const phone = call.lead?.phone ?? counterparty ?? null;
-                const name = call.lead?.name ?? null;
-                const hasTranscript =
-                  call.transcript_status === "ready" || !!call.transcript;
-                const hasRecording = !!call.recording_url;
-
-                return (
-                  <tr
-                    key={call.id}
-                    role="button"
-                    tabIndex={0}
-                    aria-label={`Open transcript for ${shortCallId(call.id)}`}
-                    onClick={() => openTranscript(call)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        openTranscript(call);
-                      }
-                    }}
-                    className="group cursor-pointer align-middle transition-colors hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none"
-                  >
-                    <td className="px-4 py-3 font-mono text-xs tabular-nums text-muted-foreground">
-                      {shortCallId(call.id)}
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex min-w-0 flex-col">
-                        <span className="truncate font-medium">
-                          {name ?? "Unknown"}
-                        </span>
-                        {phone ? (
-                          <span className="font-mono text-xs tabular-nums text-muted-foreground">
-                            {phone}
-                          </span>
-                        ) : (
-                          <span className="text-xs italic text-muted-foreground">
-                            No phone
-                          </span>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 text-muted-foreground">
-                      {formatDateTimeShort(call.started_at)}
-                    </td>
-                    <td className="px-4 py-3 font-mono tabular-nums text-muted-foreground">
-                      {formatDurationClock(call.duration_seconds)}
-                    </td>
-                    <td className="px-4 py-3">
-                      <Badge variant="outline">
-                        {inbound ? (
-                          <ArrowDownIcon className="size-3" />
-                        ) : (
-                          <ArrowUpIcon className="size-3" />
-                        )}
-                        {inbound ? "Inbound" : "Outbound"}
-                      </Badge>
-                    </td>
-                    <td className="px-4 py-3">
-                      <Badge variant={OUTCOME_VARIANT[call.status]}>
-                        {OUTCOME_LABEL[call.status]}
-                      </Badge>
-                    </td>
-                    <td className="px-4 py-3">
-                      {call.call_outcome ? (
-                        <div className="flex min-w-0 flex-col gap-0.5">
-                          <Badge variant="secondary" className="w-fit">
-                            {formatOutcomeKey(call.call_outcome)}
-                          </Badge>
-                          {call.requested_callback_at ? (
-                            <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
-                              ↩ {formatDateTimeShort(call.requested_callback_at)}
-                            </span>
-                          ) : null}
-                        </div>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">—</span>
-                      )}
-                    </td>
-                    {showBestDisposition ? (
-                      <td className="px-4 py-3">
-                        {call.best_outcome ? (
-                          <Badge variant="secondary" className="w-fit">
-                            {formatOutcomeKey(call.best_outcome)}
-                          </Badge>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">
-                            —
-                          </span>
-                        )}
-                      </td>
-                    ) : null}
-                    <td
-                      className="px-4 py-3"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      {hasRecording && call.recording_url ? (
-                        <Popover>
-                          <PopoverTrigger
-                            render={
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                className="h-7 px-2 text-xs"
-                                aria-label="Play recording"
-                              />
-                            }
-                          >
-                            <PlayIcon className="size-3" /> Play
-                          </PopoverTrigger>
-                          <PopoverContent
-                            align="end"
-                            sideOffset={6}
-                            className="w-80 p-3"
-                          >
-                            <div className="flex flex-col gap-2">
-                              <div className="text-xs font-medium text-muted-foreground">
-                                Recording · {shortCallId(call.id)}
-                              </div>
-                              <audio
-                                src={call.recording_url}
-                                controls
-                                preload="metadata"
-                                className="w-full"
-                              />
-                            </div>
-                          </PopoverContent>
-                        </Popover>
-                      ) : hasTranscript ? (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-7 px-2 text-xs"
-                          onClick={() => openTranscript(call)}
-                        >
-                          Transcript
-                        </Button>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">—</span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
+              {items.map((call) => (
+                <ConversationTableRow
+                  key={call.id}
+                  call={call}
+                  showBestDisposition={showBestDisposition}
+                  onOpenTranscript={openTranscript}
+                />
+              ))}
             </tbody>
           </table>
         </div>
@@ -515,24 +378,182 @@ export function ConversationsTable({
           the campaign call log, the lead sheet, cart recovery and COD now all
           render a call the same way. Spreading the embedded lead onto the
           pane's optional lead fields is what surfaces the Lead panel. */}
-      <CallDetailSheet
-        call={
-          transcriptCall
-            ? {
-                ...transcriptCall,
-                lead_name: transcriptCall.lead?.name ?? null,
-                lead_status: transcriptCall.lead?.status ?? null,
-                lead_intent: transcriptCall.lead?.current_intent ?? null,
-              }
-            : null
-        }
-        counterpartyName={transcriptCall?.lead?.name ?? null}
-        open={transcriptOpen}
-        onOpenChange={setTranscriptOpen}
-      />
+      {transcriptOpen ? (
+        <CallDetailSheet
+          call={
+            transcriptCall
+              ? {
+                  ...transcriptCall,
+                  lead_name: transcriptCall.lead?.name ?? null,
+                  lead_status: transcriptCall.lead?.status ?? null,
+                  lead_intent: transcriptCall.lead?.current_intent ?? null,
+                }
+              : null
+          }
+          counterpartyName={transcriptCall?.lead?.name ?? null}
+          open={transcriptOpen}
+          onOpenChange={setTranscriptOpen}
+        />
+      ) : null}
     </>
   );
 }
+
+interface ConversationTableRowProps {
+  call: CallWithLead;
+  showBestDisposition: boolean;
+  onOpenTranscript: (call: CallWithLead) => void;
+}
+
+const ConversationTableRow = React.memo(function ConversationTableRow({
+  call,
+  showBestDisposition,
+  onOpenTranscript,
+}: ConversationTableRowProps) {
+  const inbound = call.direction === "inbound";
+  const counterparty = inbound ? call.from_phone : call.to_phone;
+  const phone = call.lead?.phone ?? counterparty ?? null;
+  const name = call.lead?.name ?? null;
+  const hasTranscript =
+    call.transcript_status === "ready" || !!call.transcript;
+  const hasRecording = !!call.recording_url;
+
+  return (
+    <tr
+      role="button"
+      tabIndex={0}
+      aria-label={`Open transcript for ${shortCallId(call.id)}`}
+      onClick={() => onOpenTranscript(call)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onOpenTranscript(call);
+        }
+      }}
+      className="group cursor-pointer align-middle transition-colors hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none"
+    >
+      <td className="px-4 py-3 font-mono text-xs tabular-nums text-muted-foreground">
+        {shortCallId(call.id)}
+      </td>
+      <td className="px-4 py-3">
+        <div className="flex min-w-0 flex-col">
+          <span className="truncate font-medium">
+            {name ?? "Unknown"}
+          </span>
+          {phone ? (
+            <span className="font-mono text-xs tabular-nums text-muted-foreground">
+              {phone}
+            </span>
+          ) : (
+            <span className="text-xs italic text-muted-foreground">
+              No phone
+            </span>
+          )}
+        </div>
+      </td>
+      <td className="px-4 py-3 text-muted-foreground">
+        {formatDateTimeShort(call.started_at)}
+      </td>
+      <td className="px-4 py-3 font-mono tabular-nums text-muted-foreground">
+        {formatDurationClock(call.duration_seconds)}
+      </td>
+      <td className="px-4 py-3">
+        <Badge variant="outline">
+          {inbound ? (
+            <ArrowDownIcon className="size-3" />
+          ) : (
+            <ArrowUpIcon className="size-3" />
+          )}
+          {inbound ? "Inbound" : "Outbound"}
+        </Badge>
+      </td>
+      <td className="px-4 py-3">
+        <Badge variant={OUTCOME_VARIANT[call.status]}>
+          {OUTCOME_LABEL[call.status]}
+        </Badge>
+      </td>
+      <td className="px-4 py-3">
+        {call.call_outcome ? (
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <Badge variant="secondary" className="w-fit">
+              {formatOutcomeKey(call.call_outcome)}
+            </Badge>
+            {call.requested_callback_at ? (
+              <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
+                ↩ {formatDateTimeShort(call.requested_callback_at)}
+              </span>
+            ) : null}
+          </div>
+        ) : (
+          <span className="text-xs text-muted-foreground">—</span>
+        )}
+      </td>
+      {showBestDisposition ? (
+        <td className="px-4 py-3">
+          {call.best_outcome ? (
+            <Badge variant="secondary" className="w-fit">
+              {formatOutcomeKey(call.best_outcome)}
+            </Badge>
+          ) : (
+            <span className="text-xs text-muted-foreground">
+              —
+            </span>
+          )}
+        </td>
+      ) : null}
+      <td
+        className="px-4 py-3"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {hasRecording && call.recording_url ? (
+          <Popover>
+            <PopoverTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-2 text-xs"
+                  aria-label="Play recording"
+                />
+              }
+            >
+              <PlayIcon className="size-3" /> Play
+            </PopoverTrigger>
+            <PopoverContent
+              align="end"
+              sideOffset={6}
+              className="w-80 p-3"
+            >
+              <div className="flex flex-col gap-2">
+                <div className="text-xs font-medium text-muted-foreground">
+                  Recording · {shortCallId(call.id)}
+                </div>
+                {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+                <audio
+                  src={call.recording_url}
+                  controls
+                  preload="metadata"
+                  className="w-full"
+                />
+              </div>
+            </PopoverContent>
+          </Popover>
+        ) : hasTranscript ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 px-2 text-xs"
+            onClick={() => onOpenTranscript(call)}
+          >
+            Transcript
+          </Button>
+        ) : (
+          <span className="text-xs text-muted-foreground">—</span>
+        )}
+      </td>
+    </tr>
+  );
+});
 
 function SortableHeader({
   field,

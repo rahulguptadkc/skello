@@ -220,39 +220,52 @@ export async function GET(request: NextRequest) {
   // Use the same RPC as the leads table so the export's WHERE clause stays
   // in lockstep with the in-app filter logic — same catalog awareness for
   // dynamic JSONB fields, same column allowlist, same date-range handling.
-  // Sort by created_at desc to match the route's pre-RPC behaviour (newest
-  // captured leads first), and pull include_zero_calls=true since exporters
-  // generally want every lead in the window, not just contacted ones.
-  const { data, error } = await supabase.rpc("lead_call_activity", {
-    p_org_id: session.organisation.id,
-    p_org_slug: session.organisation.slug,
-    p_include_zero_calls: true,
-    p_limit: EXPORT_CAP + 1,
-    p_offset: 0,
-    p_filters: filters ?? [],
-    p_sort_by: {
-      source: "column",
-      key: "created_at",
-      dir: "desc",
-      type: "date",
-    },
-    p_search: search ?? null,
-    p_from: from ?? null,
-    p_to: to ?? null,
-  });
-  if (error) {
-    const message = logSkeloError("EXPORT", "Lead export query failed", {
-      organisationId: session.organisation.id,
-      cause: error,
+  const BATCH_SIZE = 1_000;
+  const allLeads: LeadRow[] = [];
+  let offset = 0;
+  let hasMore = true;
+  let truncated = false;
+
+  while (hasMore) {
+    const { data, error } = await supabase.rpc("lead_call_activity", {
+      p_org_id: session.organisation.id,
+      p_org_slug: session.organisation.slug,
+      p_include_zero_calls: true,
+      p_limit: BATCH_SIZE,
+      p_offset: offset,
+      p_filters: filters ?? [],
+      p_sort_by: {
+        source: "column",
+        key: "created_at",
+        dir: "desc",
+        type: "date",
+      },
+      p_search: search ?? null,
+      p_from: from ?? null,
+      p_to: to ?? null,
     });
-    return NextResponse.json({ error: message }, { status: 500 });
+    if (error) {
+      const message = logSkeloError("EXPORT", "Lead export query failed", {
+        organisationId: session.organisation.id,
+        cause: error,
+      });
+      return NextResponse.json({ error: message }, { status: 500 });
+    }
+
+    const batch = (data ?? []) as LeadRow[];
+    allLeads.push(...batch);
+
+    if (batch.length < BATCH_SIZE) {
+      hasMore = false;
+    } else if (allLeads.length >= EXPORT_CAP) {
+      hasMore = false;
+      truncated = true;
+    } else {
+      offset += BATCH_SIZE;
+    }
   }
 
-  // supabase-js generates the RPC return as the row union rather than the
-  // set type, so we widen-then-narrow rather than chaining .returns<T[]>().
-  const raw = (data ?? []) as LeadRow[];
-  const truncated = raw.length > EXPORT_CAP;
-  const leads = truncated ? raw.slice(0, EXPORT_CAP) : raw;
+  const leads = truncated ? allLeads.slice(0, EXPORT_CAP) : allLeads;
 
   // Batch-fetch the most recent call per lead for the snapshot fields.
   // Single round trip; DISTINCT ON pinned via in-memory pick to avoid an
@@ -307,59 +320,71 @@ async function fetchLatestCallSnapshots(
   const out = new Map<string, CallSnapshot>();
   if (leadIds.length === 0) return out;
   const supabase = await createClient();
-  const CHUNK_SIZE = 500;
+  // Safe chunk size (100 UUIDs ~ 3.7KB query string) to avoid exceeding
+  // HTTP server/parser URL and header length limits (typically 16KB max).
+  const CHUNK_SIZE = 100;
   const BATCH_SIZE = 1_000;
 
+  const chunks: string[][] = [];
   for (let i = 0; i < leadIds.length; i += CHUNK_SIZE) {
-    const chunk = leadIds.slice(i, i + CHUNK_SIZE);
-    let offset = 0;
-    let hasMore = true;
+    chunks.push(leadIds.slice(i, i + CHUNK_SIZE));
+  }
 
-    while (hasMore) {
-      const { data, error } = await supabase
-        .from("calls")
-        .select(
-          "lead_id, interest, summary, actionable, customer_status, visit_scheduled_at, started_at",
-        )
-        .eq("organisation_id", organisationId)
-        .in("lead_id", chunk)
-        .order("started_at", { ascending: false })
-        .range(offset, offset + BATCH_SIZE - 1);
+  const CONCURRENCY = 8;
+  for (let i = 0; i < chunks.length; i += CONCURRENCY) {
+    const pool = chunks.slice(i, i + CONCURRENCY);
+    await Promise.all(
+      pool.map(async (chunk) => {
+        let offset = 0;
+        let hasMore = true;
 
-      if (error) {
-        logSkeloError("EXPORT", "Latest-call snapshot fetch failed", {
-          organisationId,
-          cause: error,
-        });
-        break;
-      }
+        while (hasMore) {
+          const { data, error } = await supabase
+            .from("calls")
+            .select(
+              "lead_id, interest, summary, actionable, customer_status, visit_scheduled_at, started_at",
+            )
+            .eq("organisation_id", organisationId)
+            .in("lead_id", chunk)
+            .order("started_at", { ascending: false })
+            .range(offset, offset + BATCH_SIZE - 1);
 
-      const rows = data ?? [];
-      for (const row of rows as Array<{
-        lead_id: string;
-        interest: string | null;
-        summary: string | null;
-        actionable: string | null;
-        customer_status: string | null;
-        visit_scheduled_at: string | null;
-      }>) {
-        if (!out.has(row.lead_id)) {
-          out.set(row.lead_id, {
-            interest: row.interest,
-            summary: row.summary,
-            actionable: row.actionable,
-            customer_status: row.customer_status,
-            visit_scheduled_at: row.visit_scheduled_at,
-          });
+          if (error) {
+            logSkeloError("EXPORT", "Latest-call snapshot fetch failed", {
+              organisationId,
+              cause: error,
+            });
+            break;
+          }
+
+          const rows = data ?? [];
+          for (const row of rows as Array<{
+            lead_id: string;
+            interest: string | null;
+            summary: string | null;
+            actionable: string | null;
+            customer_status: string | null;
+            visit_scheduled_at: string | null;
+          }>) {
+            if (!out.has(row.lead_id)) {
+              out.set(row.lead_id, {
+                interest: row.interest,
+                summary: row.summary,
+                actionable: row.actionable,
+                customer_status: row.customer_status,
+                visit_scheduled_at: row.visit_scheduled_at,
+              });
+            }
+          }
+
+          if (rows.length < BATCH_SIZE) {
+            hasMore = false;
+          } else {
+            offset += BATCH_SIZE;
+          }
         }
-      }
-
-      if (rows.length < BATCH_SIZE) {
-        hasMore = false;
-      } else {
-        offset += BATCH_SIZE;
-      }
-    }
+      }),
+    );
   }
 
   return out;

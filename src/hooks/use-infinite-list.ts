@@ -39,6 +39,13 @@ export interface UseInfiniteListResult<Row> {
   pagedBeyondInitial: boolean;
   /** Attach to a 1px sentinel element placed below your last row. */
   sentinelRef: React.RefObject<HTMLDivElement | null>;
+  /** Optimistically update an item in the list by predicate. */
+  updateItem: (
+    predicate: (item: Row) => boolean,
+    patch: Partial<Row> | ((prev: Row) => Row),
+  ) => void;
+  /** Optimistically remove an item from the list by predicate. */
+  removeItem: (predicate: (item: Row) => boolean) => void;
 }
 
 /**
@@ -166,6 +173,32 @@ export function useInfiniteList<Row>({
     return () => observer.disconnect();
   }, [pageSize]);
 
+  const updateItem = React.useCallback(
+    (
+      predicate: (item: Row) => boolean,
+      patch: Partial<Row> | ((prev: Row) => Row),
+    ) => {
+      setItems((prev) =>
+        prev.map((item) => {
+          if (!predicate(item)) return item;
+          if (typeof patch === "function") {
+            return patch(item);
+          }
+          return { ...item, ...patch };
+        }),
+      );
+    },
+    [],
+  );
+
+  const removeItem = React.useCallback(
+    (predicate: (item: Row) => boolean) => {
+      setItems((prev) => prev.filter((item) => !predicate(item)));
+      setTotal((prev) => Math.max(0, prev - 1));
+    },
+    [],
+  );
+
   return {
     items,
     total,
@@ -173,5 +206,7 @@ export function useInfiniteList<Row>({
     hasMore: items.length < total,
     pagedBeyondInitial,
     sentinelRef,
+    updateItem,
+    removeItem,
   };
 }
