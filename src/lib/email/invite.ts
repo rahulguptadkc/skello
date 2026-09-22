@@ -47,15 +47,17 @@ interface SendInviteEmailParams {
 export async function sendTeamInviteEmail(
   params: SendInviteEmailParams,
 ): Promise<{ success: boolean; error?: string }> {
+  const baseAppUrl = (
+    process.env.NEXT_PUBLIC_APP_URL || "https://app.skelo.team"
+  ).replace(/\/+$/, "");
+
   const {
     toEmail,
     temporaryPassword,
     orgName,
     inviterEmail,
     role,
-    loginUrl = process.env.NEXT_PUBLIC_APP_URL
-      ? `${process.env.NEXT_PUBLIC_APP_URL}/login`
-      : "https://app.skelo.ai/login",
+    loginUrl = `${baseAppUrl}/login`,
   } = params;
 
   const roleTitle = role === "admin" ? "Workspace Admin" : "Team Member";

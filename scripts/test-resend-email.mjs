@@ -128,7 +128,7 @@ if (targetEmail) {
                   </div>
                 </div>
                 <div class="button-container">
-                  <a href="${process.env.NEXT_PUBLIC_APP_URL || 'https://app.skelo.team'}/login" class="button">Log In to Workspace</a>
+                  <a href="${(process.env.NEXT_PUBLIC_APP_URL || 'https://app.skelo.team').replace(/\/+$/, '')}/login" class="button">Log In to Workspace</a>
                 </div>
                 <div class="footer">
                   If you did not expect this invitation, you can safely ignore this email.
