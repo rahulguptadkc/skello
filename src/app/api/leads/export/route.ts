@@ -2,17 +2,16 @@ import { type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
 import { leadActivityFilterSchema } from "@/lib/validations/lead-activity";
+import { humaniseFieldKey } from "@/lib/format/keys";
 import {
   type CustomFieldsCarrier,
-  type DiscoveredCustomField,
-  discoverCustomFields,
-  pickCustomFieldValue,
   stringifyCustomValue,
 } from "@/lib/csv-custom-fields";
 import { logSkeloError } from "@/lib/errors";
 import { requireSession } from "@/lib/auth/session";
 import { type CsvColumn, toCsv, withBom } from "@/lib/csv";
 import { checkRateLimit, tooManyRequestsResponse } from "@/lib/rate-limit";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -78,6 +77,13 @@ interface LeadRow extends CustomFieldsCarrier {
   notes: string | null;
   city: string | null;
   pincode: string | null;
+  owner_label?: string | null;
+  inbound_calls?: number | string | null;
+  outbound_calls?: number | string | null;
+  total_calls?: number | string | null;
+  last_call_at?: string | null;
+  first_call_at?: string | null;
+  total_duration_seconds?: number | string | null;
 }
 
 // Per-call snapshot fields surfaced into the CSV. recording_url was
@@ -127,57 +133,185 @@ function pickJsonDate(blob: Record<string, unknown> | null, key: string): string
   return d.toISOString();
 }
 
-// lead_data keys that already get a dedicated static column above
-// (Interest, Customer Type, Visit Scheduled, Wants WA). Skipping them
-// in discovery prevents the same value from being duplicated as a
-// dynamic column.
-const SURFACED_LEAD_DATA_KEYS = new Set([
-  "interest",
-  "customer_status",
-  "connect_on_whatsapp",
-  "date_and_time_of_visit",
-]);
+import type { LeadFieldDefinition } from "@/types/lead-field-definition";
 
-const STATIC_CSV_COLUMNS: CsvColumn<ExportRow>[] = [
-  { header: "ID", value: (l) => l.id },
-  { header: "Created At", value: (l) => l.created_at },
-  { header: "Name", value: (l) => l.name },
-  { header: "Phone", value: (l) => l.phone },
-  { header: "Interest", value: (l) => l.interest },
-  { header: "Latest Call Summary", value: (l) => l.summary },
-  { header: "Intent", value: (l) => l.current_intent },
-  { header: "Status", value: (l) => l.status },
-  { header: "Source", value: (l) => l.source },
-  { header: "Customer Type", value: (l) => l.customer_status },
-  { header: "City", value: (l) => l.city },
-  { header: "Pincode", value: (l) => l.pincode },
-  { header: "Visit Scheduled", value: (l) => l.visit_scheduled_at },
-  { header: "Pending Action", value: (l) => l.pending_action },
-  { header: "Wants WA", value: (l) => l.wants_to_connect_on_watsapp },
-  { header: "Notes", value: (l) => l.notes },
-];
-
-// Catalog-derived columns slot in just before "Notes" so the trailing
-// free-text column keeps its position at the right edge of the sheet
-// (admins are used to scrolling all the way over for it).
-function buildCsvColumns(
-  fields: DiscoveredCustomField[],
-): CsvColumn<ExportRow>[] {
-  const dynamicColumns: CsvColumn<ExportRow>[] = fields.map((f) => ({
-    header: f.header,
-    value: (row) => stringifyCustomValue(pickCustomFieldValue(row, f)),
-  }));
-  const notesIdx = STATIC_CSV_COLUMNS.findIndex(
-    (col) => col.header === "Notes",
-  );
-  if (notesIdx === -1) {
-    return [...STATIC_CSV_COLUMNS, ...dynamicColumns];
+function resolveLeadFieldValue(
+  row: ExportRow,
+  def: Pick<
+    LeadFieldDefinition,
+    "source_column" | "category" | "key_path" | "data_type"
+  >,
+): string | number | null {
+  if (def.source_column === "column") {
+    switch (def.key_path) {
+      case "inbound_calls":
+        return row.inbound_calls !== undefined && row.inbound_calls !== null
+          ? Number(row.inbound_calls)
+          : 0;
+      case "outbound_calls":
+        return row.outbound_calls !== undefined && row.outbound_calls !== null
+          ? Number(row.outbound_calls)
+          : 0;
+      case "total_calls":
+        return row.total_calls !== undefined && row.total_calls !== null
+          ? Number(row.total_calls)
+          : 0;
+      case "last_call_at":
+        return row.last_call_at ?? null;
+      case "first_call_at":
+        return row.first_call_at ?? null;
+      case "current_intent": {
+        const val = row.current_intent;
+        if (typeof val === "string" && val.trim()) {
+          return val.charAt(0).toUpperCase() + val.slice(1);
+        }
+        return null;
+      }
+      case "pending_action":
+        return row.pending_action ? "Pending" : "No";
+      case "status":
+        return row.status
+          ? row.status.charAt(0).toUpperCase() + row.status.slice(1)
+          : null;
+      case "source":
+        return row.source ?? null;
+      case "notes":
+        return row.notes ?? null;
+      case "city":
+        return row.city ?? null;
+      case "pincode":
+        return row.pincode ?? null;
+      case "owner_label":
+        return row.owner_label ?? null;
+      case "created_at":
+        return row.created_at ?? null;
+      case "updated_at":
+        return row.updated_at ?? null;
+      default: {
+        const raw = (row as unknown as Record<string, unknown>)[def.key_path];
+        return stringifyCustomValue(raw);
+      }
+    }
   }
-  return [
-    ...STATIC_CSV_COLUMNS.slice(0, notesIdx),
-    ...dynamicColumns,
-    ...STATIC_CSV_COLUMNS.slice(notesIdx),
+
+  let raw: unknown = null;
+  if (def.source_column === "lead_data") {
+    raw = row.lead_data?.[def.key_path];
+    if (raw === undefined || raw === null) {
+      if (def.key_path === "interest") raw = row.interest;
+      else if (def.key_path === "summary") raw = row.summary;
+      else if (def.key_path === "actionable") raw = row.actionable;
+      else if (def.key_path === "customer_status") raw = row.customer_status;
+      else if (
+        def.key_path === "date_and_time_of_visit" ||
+        def.key_path === "visit_scheduled_at"
+      )
+        raw = row.visit_scheduled_at;
+      else if (
+        def.key_path === "connect_on_whatsapp" ||
+        def.key_path === "wants_to_connect_on_watsapp"
+      )
+        raw = row.wants_to_connect_on_watsapp;
+    }
+  } else if (def.source_column === "custom_data") {
+    const cd = row.custom_data;
+    if (cd) {
+      const cat = def.category ?? "";
+      if (cat === "") {
+        raw = cd[def.key_path];
+      } else {
+        raw = cd[cat]?.[def.key_path];
+      }
+    }
+  }
+
+  if (raw === undefined || raw === null) return null;
+
+  if (def.data_type === "boolean") {
+    const truthy =
+      raw === true ||
+      (typeof raw === "string" &&
+        ["true", "yes", "1"].includes(raw.toLowerCase()));
+    return truthy ? "Yes" : "No";
+  }
+  if (def.data_type === "number") {
+    const n = typeof raw === "number" ? raw : Number(raw);
+    return Number.isFinite(n) ? n : null;
+  }
+  if (def.data_type === "date") {
+    if (typeof raw === "string") return raw;
+    if (raw instanceof Date) return raw.toISOString();
+    return String(raw);
+  }
+
+  return stringifyCustomValue(raw);
+}
+
+function buildVisibleCsvColumns(
+  defs: Array<
+    Pick<
+      LeadFieldDefinition,
+      "source_column" | "category" | "key_path" | "label" | "data_type"
+    >
+  >,
+): CsvColumn<ExportRow>[] {
+  const columns: CsvColumn<ExportRow>[] = [
+    { header: "Name", value: (l) => l.name },
+    { header: "Phone", value: (l) => l.phone },
   ];
+
+  if (defs.length === 0) {
+    return [
+      ...columns,
+      {
+        header: "Intent",
+        value: (l) =>
+          l.current_intent
+            ? l.current_intent.charAt(0).toUpperCase() +
+              l.current_intent.slice(1)
+            : null,
+      },
+      {
+        header: "Status",
+        value: (l) =>
+          l.status
+            ? l.status.charAt(0).toUpperCase() + l.status.slice(1)
+            : null,
+      },
+      { header: "Source", value: (l) => l.source },
+      { header: "Notes", value: (l) => l.notes },
+      { header: "Created At", value: (l) => l.created_at },
+    ];
+  }
+
+  for (const def of defs) {
+    const keyLower = def.key_path.toLowerCase();
+    const labelLower = def.label?.trim().toLowerCase();
+    if (
+      keyLower === "name" ||
+      keyLower === "phone" ||
+      labelLower === "name" ||
+      labelLower === "phone" ||
+      keyLower === "business_slug"
+    ) {
+      continue;
+    }
+
+    const header =
+      def.label?.trim() ||
+      (def.source_column === "column" && def.key_path === "inbound_calls"
+        ? "In"
+        : def.source_column === "column" && def.key_path === "outbound_calls"
+          ? "Out"
+          : humaniseFieldKey(def.key_path));
+
+    columns.push({
+      header,
+      value: (row) => resolveLeadFieldValue(row, def),
+    });
+  }
+
+  return columns;
 }
 
 export async function GET(request: NextRequest) {
@@ -216,7 +350,7 @@ export async function GET(request: NextRequest) {
   }
   const { from, to, range, filters, search } = parsedInput.data;
 
-  const supabase = await createClient();
+  const admin = createAdminClient();
   // Use the same RPC as the leads table so the export's WHERE clause stays
   // in lockstep with the in-app filter logic — same catalog awareness for
   // dynamic JSONB fields, same column allowlist, same date-range handling.
@@ -227,7 +361,7 @@ export async function GET(request: NextRequest) {
   let truncated = false;
 
   while (hasMore) {
-    const { data, error } = await supabase.rpc("lead_call_activity", {
+    const { data, error } = await admin.rpc("lead_call_activity", {
       p_org_id: session.organisation.id,
       p_org_slug: session.organisation.slug,
       p_include_zero_calls: true,
@@ -281,7 +415,7 @@ export async function GET(request: NextRequest) {
       ...l,
       interest: snap?.interest ?? pickJsonString(l.lead_data, "interest"),
       summary: snap?.summary ?? null,
-      actionable: snap?.actionable ?? null,
+      actionable: snap?.actionable ?? pickJsonString(l.lead_data, "actionable"),
       customer_status:
         snap?.customer_status ?? pickJsonString(l.lead_data, "customer_status"),
       visit_scheduled_at:
@@ -291,8 +425,17 @@ export async function GET(request: NextRequest) {
     };
   });
 
-  const discoveredFields = discoverCustomFields(leads, SURFACED_LEAD_DATA_KEYS);
-  const csvColumns = buildCsvColumns(discoveredFields);
+  const { data: rawDefs } = await admin
+    .from("lead_field_definitions")
+    .select(
+      "id, source_column, category, key_path, label, data_type, visible_in_table, display_order",
+    )
+    .eq("organisation_id", session.organisation.id)
+    .eq("visible_in_table", true)
+    .order("display_order", { ascending: true })
+    .order("key_path", { ascending: true });
+
+  const csvColumns = buildVisibleCsvColumns(rawDefs ?? []);
   const body = withBom(toCsv(rows, csvColumns));
   const stamp = new Date().toISOString().slice(0, 10);
   const rangeLabel = (range ?? "custom").replace(/[^a-z0-9_-]+/gi, "_");
@@ -319,7 +462,7 @@ async function fetchLatestCallSnapshots(
 ): Promise<Map<string, CallSnapshot>> {
   const out = new Map<string, CallSnapshot>();
   if (leadIds.length === 0) return out;
-  const supabase = await createClient();
+  const admin = createAdminClient();
   // Safe chunk size (100 UUIDs ~ 3.7KB query string) to avoid exceeding
   // HTTP server/parser URL and header length limits (typically 16KB max).
   const CHUNK_SIZE = 100;
@@ -339,7 +482,7 @@ async function fetchLatestCallSnapshots(
         let hasMore = true;
 
         while (hasMore) {
-          const { data, error } = await supabase
+          const { data, error } = await admin
             .from("calls")
             .select(
               "lead_id, interest, summary, actionable, customer_status, visit_scheduled_at, started_at",

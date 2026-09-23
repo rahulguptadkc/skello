@@ -1,18 +1,12 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
-import {
-  type DiscoveredCustomField,
-  discoverCustomFields,
-  pickCustomFieldValue,
-  stringifyCustomValue,
-} from "@/lib/csv-custom-fields";
 import { logSkeloError } from "@/lib/errors";
 import { requireSession } from "@/lib/auth/session";
 import { type CsvColumn, toCsv, withBom } from "@/lib/csv";
 import { applyCallFilters } from "@/lib/queries/call-filters";
 import { checkRateLimit, tooManyRequestsResponse } from "@/lib/rate-limit";
-import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import {
   callDirectionSchema,
   callStatusSchema,
@@ -57,6 +51,7 @@ const CALL_COLUMNS =
   "name_extracted, interest, lead_intent_extracted, customer_status, " +
   "actionable, visit_scheduled_at, connect_on_whatsapp, transcript_status, " +
   "transcript, lead_data, custom_data, error_code, error_message, " +
+  "call_outcome, " +
   "lead:leads(name, phone)";
 
 interface CallRow {
@@ -82,6 +77,7 @@ interface CallRow {
   connect_on_whatsapp: boolean | null;
   transcript_status: string | null;
   transcript: string | null;
+  call_outcome: string | null;
   lead_data: Record<string, unknown> | null;
   custom_data: Record<string, Record<string, unknown>> | null;
   error_code: string | null;
@@ -94,71 +90,32 @@ interface ExportRow extends CallRow {
   counterparty_phone: string | null;
 }
 
-// Keys already surfaced as their own CSV columns — skip when flattening
-// lead_data so the same value doesn't appear twice. Mirrors the
-// CALL_LEAD_DATA_SURFACED set in the call detail sheet.
-const SURFACED_LEAD_DATA_KEYS = new Set([
-  "name",
-  "interest",
-  "lead_intent",
-  "actionable",
-  "customer_status",
-  "connect_on_whatsapp",
-  "date_and_time_of_visit",
-  "business_slug",
-]);
-
 const STATIC_CSV_COLUMNS: CsvColumn<ExportRow>[] = [
   { header: "Call ID", value: (c) => c.id },
-  { header: "Provider Call ID", value: (c) => c.bolna_call_id },
-  { header: "Started At", value: (c) => c.started_at },
-  { header: "Answered At", value: (c) => c.answered_at },
-  { header: "Ended At", value: (c) => c.ended_at },
-  { header: "Duration (sec)", value: (c) => c.duration_seconds },
-  { header: "Direction", value: (c) => c.direction },
-  { header: "Outcome", value: (c) => c.status },
-  { header: "Agent", value: (c) => c.agent_label ?? c.agent_id },
   { header: "Lead Name", value: (c) => c.lead?.name ?? null },
-  { header: "Name (Captured)", value: (c) => c.name_extracted },
-  { header: "Lead Phone", value: (c) => c.lead?.phone ?? c.counterparty_phone },
-  { header: "From Phone", value: (c) => c.from_phone },
-  { header: "To Phone", value: (c) => c.to_phone },
-  { header: "Language", value: (c) => c.language },
-  { header: "Transcript Status", value: (c) => c.transcript_status },
-  { header: "Transcript", value: (c) => c.transcript },
+  { header: "Phone", value: (c) => c.lead?.phone ?? c.counterparty_phone },
+  { header: "Date & Time", value: (c) => c.started_at },
+  { header: "Duration (sec)", value: (c) => c.duration_seconds },
+  {
+    header: "Direction",
+    value: (c) =>
+      c.direction
+        ? c.direction.charAt(0).toUpperCase() + c.direction.slice(1)
+        : null,
+  },
+  {
+    header: "Outcome",
+    value: (c) =>
+      c.status ? c.status.charAt(0).toUpperCase() + c.status.slice(1) : null,
+  },
+  {
+    header: "Disposition",
+    value: (c) => c.call_outcome ?? c.interest ?? c.lead_intent_extracted,
+  },
+  { header: "Agent", value: (c) => c.agent_label ?? c.agent_id },
   { header: "Summary", value: (c) => c.summary },
-  { header: "Intent", value: (c) => c.lead_intent_extracted },
-  { header: "Interest", value: (c) => c.interest },
-  { header: "Customer Type", value: (c) => c.customer_status },
-  { header: "Actionable", value: (c) => c.actionable },
-  { header: "Visit Scheduled", value: (c) => c.visit_scheduled_at },
-  { header: "Wants WA", value: (c) => c.connect_on_whatsapp },
-  { header: "Error Code", value: (c) => c.error_code },
-  { header: "Error Message", value: (c) => c.error_message },
+  { header: "Transcript", value: (c) => c.transcript },
 ];
-
-// Per-field columns are inserted after "Wants WA" (where the old
-// single "Captured Fields" column used to live), so the error pair
-// stays at the right edge of the sheet.
-function buildCsvColumns(
-  fields: DiscoveredCustomField[],
-): CsvColumn<ExportRow>[] {
-  const dynamicColumns: CsvColumn<ExportRow>[] = fields.map((f) => ({
-    header: f.header,
-    value: (row) => stringifyCustomValue(pickCustomFieldValue(row, f)),
-  }));
-  const errorIdx = STATIC_CSV_COLUMNS.findIndex(
-    (col) => col.header === "Error Code",
-  );
-  if (errorIdx === -1) {
-    return [...STATIC_CSV_COLUMNS, ...dynamicColumns];
-  }
-  return [
-    ...STATIC_CSV_COLUMNS.slice(0, errorIdx),
-    ...dynamicColumns,
-    ...STATIC_CSV_COLUMNS.slice(errorIdx),
-  ];
-}
 
 export async function GET(request: NextRequest) {
   const session = await requireSession();
@@ -198,14 +155,14 @@ export async function GET(request: NextRequest) {
   const { from, to, range, direction, status, agent_id, q, lead_id } =
     parsedInput.data;
 
-  const supabase = await createClient();
+  const admin = createAdminClient();
   const allCalls: CallRow[] = [];
   let offset = 0;
   let hasMore = true;
   let truncated = false;
 
   while (hasMore) {
-    let query = supabase
+    let query = admin
       .from("calls")
       .select(CALL_COLUMNS)
       .eq("organisation_id", session.organisation.id)
@@ -257,8 +214,7 @@ export async function GET(request: NextRequest) {
     counterparty_phone: c.direction === "inbound" ? c.from_phone : c.to_phone,
   }));
 
-  const discoveredFields = discoverCustomFields(calls, SURFACED_LEAD_DATA_KEYS);
-  const csvColumns = buildCsvColumns(discoveredFields);
+  const csvColumns = STATIC_CSV_COLUMNS;
   const body = withBom(toCsv(rows, csvColumns));
   const stamp = new Date().toISOString().slice(0, 10);
   const rangeLabel = (range ?? "custom").replace(/[^a-z0-9_-]+/gi, "_");
@@ -286,8 +242,8 @@ async function fetchAgentLabels(
 ): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   if (agentIds.length === 0) return out;
-  const supabase = await createClient();
-  const { data, error } = await supabase
+  const admin = createAdminClient();
+  const { data, error } = await admin
     .from("voice_agents")
     .select("agent_id, label")
     .eq("organisation_id", organisationId)
