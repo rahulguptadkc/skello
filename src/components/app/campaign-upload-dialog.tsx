@@ -2,14 +2,23 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
+import Papa from "papaparse";
 import {
   CheckCircle2Icon,
+  CheckIcon,
   DownloadIcon,
+  EyeIcon,
+  FileCheckIcon,
+  FileSpreadsheetIcon,
   FileTextIcon,
   Loader2Icon,
+  RotateCcwIcon,
+  SearchIcon,
+  SparklesIcon,
   UploadCloudIcon,
   UploadIcon,
   XCircleIcon,
+  XIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -136,6 +145,11 @@ export function CampaignUploadDialog({
   const [file, setFile] = React.useState<File | null>(null);
   const [parsed, setParsed] = React.useState<ParsedCsv | null>(null);
   const [parsing, setParsing] = React.useState(false);
+  const [viewerOpen, setViewerOpen] = React.useState(false);
+  const [viewerSearch, setViewerSearch] = React.useState("");
+  const [viewerFilter, setViewerFilter] = React.useState<
+    "all" | "cleaned" | "unchanged"
+  >("all");
   const [dragOver, setDragOver] = React.useState(false);
   const [scheduleMode, setScheduleMode] = React.useState<ScheduleMode>("now");
   const [scheduledAt, setScheduledAt] =
@@ -203,6 +217,9 @@ export function CampaignUploadDialog({
     setFile(null);
     setParsed(null);
     setParsing(false);
+    setViewerOpen(false);
+    setViewerSearch("");
+    setViewerFilter("all");
     setDragOver(false);
     setScheduleMode("now");
     setScheduledAt(defaultScheduleAt());
@@ -251,6 +268,16 @@ export function CampaignUploadDialog({
       toast.error(err instanceof Error ? err.message : "Could not parse CSV");
     } finally {
       setParsing(false);
+    }
+  }
+
+
+
+  function handleRetryClean(e?: React.MouseEvent) {
+    e?.stopPropagation();
+    if (file) {
+      void ingestFile(file);
+      toast.info("Re-cleaned customer names from CSV");
     }
   }
 
@@ -308,6 +335,62 @@ export function CampaignUploadDialog({
   const numbersAvailable = voiceConfig?.dial_numbers.length ?? 0;
   const effectiveNumberCount =
     fromPhoneChoices.length > 0 ? fromPhoneChoices.length : numbersAvailable;
+
+  const filteredContacts = React.useMemo(() => {
+    if (!parsed) return [];
+    let list = parsed.contacts;
+    if (viewerFilter === "cleaned") {
+      list = list.filter((c) => c.raw_name && c.name && c.raw_name !== c.name);
+    } else if (viewerFilter === "unchanged") {
+      list = list.filter(
+        (c) => !c.raw_name || (c.name && c.raw_name === c.name),
+      );
+    }
+    if (!viewerSearch.trim()) return list;
+    const q = viewerSearch.toLowerCase().trim();
+    return list.filter(
+      (c) =>
+        c.phone.includes(q) ||
+        (c.name && c.name.toLowerCase().includes(q)) ||
+        (c.raw_name && c.raw_name.toLowerCase().includes(q)),
+    );
+  }, [parsed, viewerSearch, viewerFilter]);
+
+  const modifiedCount = React.useMemo(() => {
+    if (!parsed) return 0;
+    return parsed.contacts.filter(
+      (c) => c.raw_name && c.name && c.raw_name !== c.name,
+    ).length;
+  }, [parsed]);
+
+  const unchangedCount = React.useMemo(() => {
+    if (!parsed) return 0;
+    return parsed.contacts.length - modifiedCount;
+  }, [parsed, modifiedCount]);
+
+  function handleDownloadCleanedCsv() {
+    if (!parsed || parsed.contacts.length === 0) return;
+    const exportData = parsed.contacts.map((c) => ({
+      phone: c.phone,
+      name: c.name,
+      ...c.metadata,
+    }));
+    const csvString = Papa.unparse(exportData);
+    const blob = new Blob([`\ufeff${csvString}`], {
+      type: "text/csv;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = file
+      ? `cleaned-${file.name}`
+      : "cleaned-campaign-contacts.csv";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    toast.success("Downloaded cleaned CSV file");
+  }
 
   async function onConfirm() {
     if (!name.trim()) {
@@ -513,35 +596,105 @@ export function CampaignUploadDialog({
                     <FileTextIcon className="size-3.5" /> {file.name}
                   </p>
                   {parsed.valid_rows > 0 ? (
-                    <p className="text-xs text-muted-foreground">
-                      Phone column:{" "}
-                      <span className="font-mono text-foreground">
-                        {parsed.phone_column}
-                      </span>{" "}
-                      ·{" "}
-                      <span className="font-medium tabular-nums text-foreground">
-                        {parsed.valid_rows} valid
-                      </span>{" "}
-                      / {parsed.total_rows} rows
-                      {parsed.duplicate_rows > 0
-                        ? ` · ${parsed.duplicate_rows} duplicates skipped`
-                        : ""}
-                    </p>
+                    <>
+                      <p className="text-xs text-muted-foreground">
+                        Phone column:{" "}
+                        <span className="font-mono text-foreground">
+                          {parsed.phone_column}
+                        </span>{" "}
+                        ·{" "}
+                        <span className="font-medium tabular-nums text-foreground">
+                          {parsed.valid_rows} valid
+                        </span>{" "}
+                        / {parsed.total_rows} rows
+                        {parsed.duplicate_rows > 0
+                          ? ` · ${parsed.duplicate_rows} duplicates skipped`
+                          : ""}
+                      </p>
+                      {((parsed.cleaned_name_previews?.length ?? 0) > 0 ||
+                        (parsed.converted_name_previews?.length ?? 0) > 0) && (
+                        <div className="mt-2 w-full max-w-md rounded-md border border-border/60 bg-background/90 p-3 text-left text-xs shadow-xs">
+                          <div className="flex items-center justify-between gap-2 mb-2">
+                            <p className="font-semibold text-foreground text-[11px] flex items-center gap-1.5">
+                              <SparklesIcon className="size-3.5 text-emerald-500" />
+                              Voice AI Cleaned Names Preview (
+                              {parsed.cleaned_name_previews?.length ??
+                                parsed.converted_name_previews?.length}{" "}
+                              shown):
+                            </p>
+                            <Button
+                              type="button"
+                              size="xs"
+                              variant="ghost"
+                              onClick={handleRetryClean}
+                              disabled={parsing || submitting}
+                              className="h-6 text-[11px] px-2 text-muted-foreground hover:text-foreground"
+                              title="Re-run clean process on the uploaded CSV"
+                            >
+                              <RotateCcwIcon
+                                className={cn(
+                                  "size-3 mr-1",
+                                  parsing && "animate-spin",
+                                )}
+                              />
+                              Retry clean
+                            </Button>
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {(
+                              parsed.cleaned_name_previews ??
+                              parsed.converted_name_previews.map((p) => ({
+                                original: p.original,
+                                cleaned: p.devanagari,
+                              }))
+                            ).map((item, idx) => (
+                              <span
+                                key={idx}
+                                className="inline-flex items-center gap-1 rounded bg-muted/70 px-2 py-0.5 font-mono text-[11px] border border-border/60 text-foreground"
+                              >
+                                <span className="text-muted-foreground line-through opacity-75">
+                                  {item.original}
+                                </span>
+                                <span className="text-muted-foreground/70">→</span>
+                                <span className="font-semibold text-emerald-600 dark:text-emerald-400">
+                                  {item.cleaned}
+                                </span>
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </>
                   ) : (
                     <p className="text-xs text-destructive">
                       {parsed.error ?? "No valid phone numbers found"}
                     </p>
                   )}
-                  <Button
-                    type="button"
-                    size="xs"
-                    variant="outline"
-                    onClick={clearFile}
-                    disabled={submitting}
-                    className="mt-1"
-                  >
-                    Choose a different file
-                  </Button>
+                  <div className="mt-2 flex items-center gap-2">
+                    {parsed.valid_rows > 0 && (
+                      <Button
+                        type="button"
+                        size="xs"
+                        variant="secondary"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setViewerOpen(true);
+                        }}
+                        disabled={submitting}
+                      >
+                        <EyeIcon className="size-3 mr-1" /> Open Cleaned File ({parsed.valid_rows})
+                      </Button>
+                    )}
+                    <Button
+                      type="button"
+                      size="xs"
+                      variant="outline"
+                      onClick={clearFile}
+                      disabled={submitting}
+                    >
+                      Choose a different file
+                    </Button>
+                  </div>
                 </>
               ) : (
                 <>
@@ -1037,6 +1190,249 @@ export function CampaignUploadDialog({
           </Button>
         </DialogFooter>
       </DialogContent>
+
+      {/* Cleaned File Full Screen Viewer Modal */}
+      <Dialog open={viewerOpen} onOpenChange={setViewerOpen}>
+        <DialogContent className="w-[96vw] max-w-[96vw] sm:max-w-[96vw] h-[92vh] max-h-[92vh] flex flex-col p-6 gap-4 bg-background shadow-2xl rounded-2xl">
+          <DialogHeader className="pb-3 border-b border-border/50">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pr-8">
+              <div>
+                <DialogTitle className="flex items-center gap-2 text-lg font-semibold tracking-tight">
+                  <div className="grid size-7 place-items-center rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                    <FileSpreadsheetIcon className="size-4" />
+                  </div>
+                  Cleaned Campaign Contacts
+                  <span className="ml-1 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 px-2.5 py-0.5 text-xs font-medium">
+                    {parsed?.valid_rows ?? 0} valid contacts
+                  </span>
+                </DialogTitle>
+                <DialogDescription className="text-xs text-muted-foreground mt-1">
+                  <span className="font-medium text-foreground">{file?.name}</span> · All customer names standardized to Title Case, speech recognition filler words & stray letters stripped.
+                </DialogDescription>
+              </div>
+
+              {/* Action buttons */}
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={handleDownloadCleanedCsv}
+                  className="h-8 text-xs gap-1.5"
+                  title="Download the cleaned CSV to your computer"
+                >
+                  <DownloadIcon className="size-3.5" />
+                  Export Cleaned CSV
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => setViewerOpen(false)}
+                  className="h-8 text-xs"
+                >
+                  Done
+                </Button>
+              </div>
+            </div>
+          </DialogHeader>
+
+          {/* Search & Filter Toolbar */}
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-1.5 p-0.5 bg-muted/60 rounded-lg border border-border/50">
+              <button
+                type="button"
+                onClick={() => setViewerFilter("all")}
+                className={cn(
+                  "px-3 py-1 text-xs font-medium rounded-md transition-colors",
+                  viewerFilter === "all"
+                    ? "bg-background text-foreground shadow-xs"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                All ({parsed?.valid_rows ?? 0})
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewerFilter("cleaned")}
+                className={cn(
+                  "px-3 py-1 text-xs font-medium rounded-md transition-colors flex items-center gap-1",
+                  viewerFilter === "cleaned"
+                    ? "bg-background text-emerald-600 dark:text-emerald-400 shadow-xs"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                <SparklesIcon className="size-3 text-emerald-500" />
+                Cleaned ({modifiedCount})
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewerFilter("unchanged")}
+                className={cn(
+                  "px-3 py-1 text-xs font-medium rounded-md transition-colors",
+                  viewerFilter === "unchanged"
+                    ? "bg-background text-foreground shadow-xs"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                Unchanged ({unchangedCount})
+              </button>
+            </div>
+
+            <div className="relative flex-1 max-w-sm">
+              <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+              <Input
+                placeholder="Search phone or name..."
+                value={viewerSearch}
+                onChange={(e) => setViewerSearch(e.target.value)}
+                className="pl-8.5 pr-8 h-8 text-xs"
+              />
+              {viewerSearch && (
+                <button
+                  type="button"
+                  onClick={() => setViewerSearch("")}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground p-1"
+                >
+                  <XIcon className="size-3" />
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Full Height Responsive Table */}
+          <div className="flex-1 overflow-auto rounded-lg border border-border/70 bg-card shadow-xs">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead className="bg-muted/80 backdrop-blur-sm sticky top-0 z-10 border-b border-border/70 text-muted-foreground">
+                <tr>
+                  <th className="py-2.5 px-4 font-semibold w-14">#</th>
+                  <th className="py-2.5 px-4 font-semibold w-44">Phone Number</th>
+                  <th className="py-2.5 px-4 font-semibold w-64">Cleaned Name for AI</th>
+                  <th className="py-2.5 px-4 font-semibold w-64">Original in CSV</th>
+                  <th className="py-2.5 px-4 font-semibold w-32">Status</th>
+                  <th className="py-2.5 px-4 font-semibold">Additional Fields</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border/40 font-normal">
+                {filteredContacts.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={6}
+                      className="py-16 text-center text-muted-foreground"
+                    >
+                      <p className="text-sm font-medium">No matching contacts found</p>
+                      <p className="text-xs text-muted-foreground/70 mt-1">
+                        Try adjusting your search query or active filter.
+                      </p>
+                    </td>
+                  </tr>
+                ) : (
+                  filteredContacts.map((contact, idx) => {
+                    const isModified =
+                      contact.raw_name &&
+                      contact.name &&
+                      contact.raw_name !== contact.name;
+                    return (
+                      <tr
+                        key={idx}
+                        className="hover:bg-muted/30 transition-colors group"
+                      >
+                        <td className="py-2.5 px-4 text-muted-foreground font-mono text-[11px]">
+                          {idx + 1}
+                        </td>
+                        <td className="py-2.5 px-4 font-mono font-medium text-foreground">
+                          {contact.phone}
+                        </td>
+                        <td className="py-2.5 px-4">
+                          {contact.name ? (
+                            <span className="font-semibold text-emerald-600 dark:text-emerald-400">
+                              {contact.name}
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground/50 italic">
+                              —
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-4 text-muted-foreground">
+                          {contact.raw_name ? (
+                            <span
+                              className={cn(
+                                isModified && "line-through opacity-70",
+                              )}
+                            >
+                              {contact.raw_name}
+                            </span>
+                          ) : (
+                            <span className="italic text-muted-foreground/40">
+                              —
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-4">
+                          {isModified ? (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
+                              <SparklesIcon className="size-2.5" /> Cleaned
+                            </span>
+                          ) : contact.name ? (
+                            <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                              Original
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground/40 text-[10px]">
+                              —
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-4 text-muted-foreground text-[11px] font-mono">
+                          {Object.entries(contact.metadata).length > 0 ? (
+                            <div className="flex flex-wrap gap-1">
+                              {Object.entries(contact.metadata).map(
+                                ([k, v]) => (
+                                  <span
+                                    key={k}
+                                    className="rounded bg-muted/60 px-1.5 py-0.5 border border-border/40 text-[10px]"
+                                  >
+                                    <span className="text-foreground font-medium">
+                                      {k}:
+                                    </span>{" "}
+                                    {typeof v === "object" && v !== null
+                                      ? JSON.stringify(v)
+                                      : String(v ?? "")}
+                                  </span>
+                                ),
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-muted-foreground/40">—</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          <DialogFooter className="flex items-center justify-between sm:justify-between pt-2 border-t border-border/40">
+            <p className="text-xs text-muted-foreground">
+              Showing{" "}
+              <strong className="text-foreground">
+                {filteredContacts.length}
+              </strong>{" "}
+              of {parsed?.valid_rows ?? 0} contacts ({modifiedCount} cleaned)
+            </p>
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => setViewerOpen(false)}
+              >
+                Done
+              </Button>
+            </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Dialog>
   );
 }
