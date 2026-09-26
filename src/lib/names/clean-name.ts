@@ -62,9 +62,9 @@ const DUMMY_NAMES = new Set([
   "someone",
 ]);
 
-// Common Indian & English salutations / titles to strip from names
+// Common Indian & English salutations, titles, and professional honorifics
 const SALUTATION_PATTERN =
-  /^(?:(?:mr|mrs|ms|miss|mis|dr|prof|er|shri|shree|sri|smt|shrimati|late|adv|advocate|col|capt|maj|pandit|pt)\.?)\s+/i;
+  /^(?:(?:mr|mrs|ms|miss|mis|mz|mister|master|mast|madam|mdm|sir|mx|dr|doctor|doc|prof|professor|er|engr|engineer|ca|cma|arch|architect|adv|advocate|judge|justice|hon|honorable|shri|shree|sri|sree|smt|shrimati|srimati|kumari|km|pt|pandit|pundit|babu|swami|sant|sadhu|guru|guruji|acharya|maulana|mufti|qazi|syed|sayed|sheikh|shaikh|haji|alhaj|sardar|sardarji|giani|gyani|late|swargiya|swg|capt|captain|col|colonel|maj|major|gen|general|lt|lieutenant|brig|brigadier|subedar|havaldar|inspector)[\.\-_/:\s]+)+/i;
 
 // Speech-to-text conversational introductions & filler prefixes
 const STT_INTRO_PATTERN =
@@ -138,11 +138,21 @@ export function toTitleCase(name: string): string {
     .join(" ");
 }
 
+export interface CleanCustomerNameOptions {
+  /**
+   * If true (default), extracts only the first name (e.g., "Raina Dwivedi" -> "Raina").
+   * If false, returns the cleaned full name.
+   */
+  firstNameOnly?: boolean;
+}
+
 /**
- * Cleans, sanitizes, and standardizes an Indian customer name for Voice AI.
+ * Cleans, sanitizes, and standardizes an Indian customer name for Voice AI,
+ * extracting the first name by default (e.g. "Raina Dwivedi" -> "Raina").
  */
 export function cleanCustomerName(
   rawName: string | null | undefined,
+  options: CleanCustomerNameOptions = { firstNameOnly: true },
 ): string | null {
   if (!rawName || typeof rawName !== "string") {
     return null;
@@ -158,8 +168,10 @@ export function cleanCustomerName(
   name = name.replace(STT_INTRO_PATTERN, " ");
   name = name.replace(STT_FILLER_PATTERN, " ");
 
-  // 3. Strip salutations and honorifics ("Mr.", "Dr.", "Shri", "Smt", "Miss", etc.)
-  name = name.replace(SALUTATION_PATTERN, " ");
+  // 3. Iteratively strip salutations and honorifics ("Mr.", "Dr.", "Shri", "Smt", "Miss", "Late Shri Dr.", etc.)
+  while (SALUTATION_PATTERN.test(name)) {
+    name = name.replace(SALUTATION_PATTERN, " ").trim();
+  }
 
   // 4. Remove leading numbering / list markers like "1.", "1 -", "#1"
   name = name.replace(/^#?\d+[\.\-\)\s:]+\s*/, " ");
@@ -230,6 +242,22 @@ export function cleanCustomerName(
     name = toTitleCase(name);
   }
 
+  // 14. First name extraction
+  if (options.firstNameOnly !== false) {
+    const parts = name.split(/\s+/).filter(Boolean);
+    if (parts.length > 0) {
+      // If the first word is a single initial (like "K." or "K") and there is a subsequent word with length >= 2,
+      // pick the first full name (e.g., "K. Suresh" -> "Suresh")
+      for (const p of parts) {
+        const cleanP = p.replace(/[^a-zA-Z\u0900-\u097F]/g, "");
+        if (cleanP.length >= 2) {
+          return p;
+        }
+      }
+      return parts[0];
+    }
+  }
+
   return name;
 }
 
@@ -238,6 +266,7 @@ export function cleanCustomerName(
  */
 export function cleanNamesBatch(
   names: (string | null | undefined)[],
+  options: CleanCustomerNameOptions = { firstNameOnly: true },
 ): (string | null)[] {
-  return names.map((n) => cleanCustomerName(n));
+  return names.map((n) => cleanCustomerName(n, options));
 }
