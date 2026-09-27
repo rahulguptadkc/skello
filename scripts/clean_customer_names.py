@@ -39,7 +39,8 @@ PREFIX_PATTERN = re.compile(
     r'maulana|mufti|qazi|syed|sayed|sheikh|shaikh|haji|alhaj|'
     r'sardar|sardarji|giani|gyani|'
     r'late|swargiya|swg|'
-    r'capt|captain|col|colonel|maj|major|gen|general|lt|lieutenant|brig|brigadier|subedar|havaldar|inspector'
+    r'capt|captain|col|colonel|maj|major|gen|general|lt|lieutenant|brig|brigadier|subedar|havaldar|inspector|'
+    r'श्री|श्रीमान|श्रीमती|सुश्री|कुमारी|कु|डॉ|डॉक्टर|प्रो|प्रोफेसर|पं|पंडित|स्वामी|संत|आचार्य|स्वर्गीय|स्व|बाबू|मौलाना|मुफ्ती|हाजी|सरदार'
     r')[\.\-_/:\s]+',
     flags=re.IGNORECASE
 )

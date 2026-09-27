@@ -16,6 +16,8 @@
  *  "DR. PRIYA SHARMA (Delhi)"  -> "Priya Sharma"
  */
 
+import { transliterateToDevanagari } from "./transliterate";
+
 // Dummy/placeholder names that should be treated as empty/null
 const DUMMY_NAMES = new Set([
   "test",
@@ -62,13 +64,13 @@ const DUMMY_NAMES = new Set([
   "someone",
 ]);
 
-// Common Indian & English salutations, titles, and professional honorifics
+// Common Indian & English salutations, titles, and professional honorifics (Latin + Devanagari)
 const SALUTATION_PATTERN =
-  /^(?:(?:mr|mrs|ms|miss|mis|mz|mister|master|mast|madam|mdm|sir|mx|dr|doctor|doc|prof|professor|er|engr|engineer|ca|cma|arch|architect|adv|advocate|judge|justice|hon|honorable|shri|shree|sri|sree|smt|shrimati|srimati|kumari|km|pt|pandit|pundit|babu|swami|sant|sadhu|guru|guruji|acharya|maulana|mufti|qazi|syed|sayed|sheikh|shaikh|haji|alhaj|sardar|sardarji|giani|gyani|late|swargiya|swg|capt|captain|col|colonel|maj|major|gen|general|lt|lieutenant|brig|brigadier|subedar|havaldar|inspector)[\.\-_/:\s]+)+/i;
+  /^(?:(?:mr|mrs|ms|miss|mis|mz|mister|master|mast|madam|mdm|sir|mx|dr|doctor|doc|prof|professor|er|engr|engineer|ca|cma|arch|architect|adv|advocate|judge|justice|hon|honorable|shri|shree|sri|sree|smt|shrimati|srimati|kumari|km|pt|pandit|pundit|babu|swami|sant|sadhu|guru|guruji|acharya|maulana|mufti|qazi|syed|sayed|sheikh|shaikh|haji|alhaj|sardar|sardarji|giani|gyani|late|swargiya|swg|capt|captain|col|colonel|maj|major|gen|general|lt|lieutenant|brig|brigadier|subedar|havaldar|inspector|श्री|श्रीमान|श्रीमती|सुश्री|कुमारी|कु|डॉ|डॉक्टर|प्रो|प्रोफेसर|पं|पंडित|स्वामी|संत|आचार्य|स्वर्गीय|स्व|बाबू|मौलाना|मुफ्ती|हाजी|सरदार)[\.\-_/:\s]+)+/i;
 
-// Speech-to-text conversational introductions & filler prefixes
+// Speech-to-text conversational introductions & filler prefixes (English + Hindi)
 const STT_INTRO_PATTERN =
-  /\b(?:called|my name is|this is|i am|i'm|im|speaking with|name is|call from|calling|here is)\b/gi;
+  /\b(?:called|my name is|this is|i am|i'm|im|speaking with|name is|call from|calling|here is)\b|(?:नाम है|मेरा नाम|बोल रहा हूँ|बोल रही हूँ)/gi;
 
 // Speech-to-text filler sounds
 const STT_FILLER_PATTERN =
@@ -140,19 +142,27 @@ export function toTitleCase(name: string): string {
 
 export interface CleanCustomerNameOptions {
   /**
-   * If true (default), extracts only the first name (e.g., "Raina Dwivedi" -> "Raina").
+   * If true (default), extracts only the first name (e.g., "Raina Dwivedi" -> "Raina" / "रैना").
    * If false, returns the cleaned full name.
    */
   firstNameOnly?: boolean;
+
+  /**
+   * If true (default), transliterates the cleaned first name into Hindi (Devanagari) script
+   * (e.g. "Karthik" -> "कार्तिक", "Deena" -> "दीना", "Tejesh" -> "तेजेश").
+   * If false, returns the cleaned name in Latin Title Case.
+   */
+  toDevanagari?: boolean;
 }
 
 /**
  * Cleans, sanitizes, and standardizes an Indian customer name for Voice AI,
- * extracting the first name by default (e.g. "Raina Dwivedi" -> "Raina").
+ * extracting the first name and converting it to Hindi (Devanagari) by default
+ * (e.g. "karthik" -> "कार्तिक", "t Raina Dwivedi" -> "रैना").
  */
 export function cleanCustomerName(
   rawName: string | null | undefined,
-  options: CleanCustomerNameOptions = { firstNameOnly: true },
+  options: CleanCustomerNameOptions = { firstNameOnly: true, toDevanagari: true },
 ): string | null {
   if (!rawName || typeof rawName !== "string") {
     return null;
@@ -243,22 +253,30 @@ export function cleanCustomerName(
   }
 
   // 14. First name extraction
+  let finalName = name;
   if (options.firstNameOnly !== false) {
     const parts = name.split(/\s+/).filter(Boolean);
     if (parts.length > 0) {
       // If the first word is a single initial (like "K." or "K") and there is a subsequent word with length >= 2,
       // pick the first full name (e.g., "K. Suresh" -> "Suresh")
+      let chosen = parts[0];
       for (const p of parts) {
         const cleanP = p.replace(/[^a-zA-Z\u0900-\u097F]/g, "");
         if (cleanP.length >= 2) {
-          return p;
+          chosen = p;
+          break;
         }
       }
-      return parts[0];
+      finalName = chosen;
     }
   }
 
-  return name;
+  // 15. Transliterate to Hindi (Devanagari) if requested (default: true)
+  if (options.toDevanagari !== false) {
+    finalName = transliterateToDevanagari(finalName);
+  }
+
+  return finalName;
 }
 
 /**

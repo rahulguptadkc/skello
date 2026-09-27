@@ -135,13 +135,17 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     [theme, resolvedTheme, setTheme],
   );
 
-  return <ThemeContext value={value}>{children}</ThemeContext>;
+  return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
 }
+
+const FALLBACK_THEME_VALUE: ThemeContextValue = {
+  theme: DEFAULT_THEME,
+  resolvedTheme: "light",
+  setTheme: () => {},
+  themes: THEMES,
+};
 
 export function useTheme(): ThemeContextValue {
   const context = React.useContext(ThemeContext);
-  if (!context) {
-    throw new Error("useTheme must be used within <ThemeProvider>");
-  }
-  return context;
+  return context ?? FALLBACK_THEME_VALUE;
 }

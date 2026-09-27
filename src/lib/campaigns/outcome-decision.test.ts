@@ -9,6 +9,7 @@ import {
 import type { CallStatus } from "@/types/call";
 import type { CampaignRetryTrigger } from "@/types/campaign";
 import type { ResolvedOutcomePolicy } from "@/types/outcome-policy";
+import type { OutcomeRule } from "@/types/workflow";
 
 // Fixed clock so next_attempt_at is deterministic.
 const NOW = 1_700_000_000_000;
@@ -327,6 +328,128 @@ describe("decideOutcome — technical tier", () => {
   });
 });
 
+describe("decideOutcome — workflow rules matrix", () => {
+  const rules: OutcomeRule[] = [
+    {
+      id: "r1",
+      variables: ["interested"],
+      action: "stop_calling",
+      retries: 0,
+      agent_id: null,
+    },
+    {
+      id: "r2",
+      variables: ["not_interested", "dnd"],
+      action: "stop_calling",
+      retries: 0,
+      agent_id: null,
+    },
+    {
+      id: "r3",
+      variables: ["callback_requested"],
+      action: "call_again",
+      retries: 2,
+      delay_minutes: 60,
+      agent_id: null,
+    },
+    {
+      id: "r4",
+      variables: ["no_answer", "busy"],
+      action: "call_again",
+      retries: 2,
+      delay_minutes: 120,
+      agent_id: null,
+    },
+  ];
+
+  it("stops calling when workflow rule action is stop_calling on interested", () => {
+    const d = decideOutcome(
+      make({
+        callStatus: "completed",
+        callOutcome: "interested",
+        workflowRules: rules,
+      }),
+    );
+    expect(d.kind).toBe("succeed");
+    if (d.kind === "succeed") {
+      expect(d.patch.status).toBe("succeeded");
+      expect(d.patch.last_outcome).toBe("interested");
+    }
+  });
+
+  it("stops calling when workflow rule action is stop_calling on dnd", () => {
+    const d = decideOutcome(
+      make({
+        callStatus: "completed",
+        callOutcome: "dnd",
+        workflowRules: rules,
+      }),
+    );
+    expect(d.kind).toBe("succeed");
+  });
+
+  it("re-arms when workflow rule action is call_again on no_answer under max retries", () => {
+    const d = decideOutcome(
+      make({
+        callStatus: "no_answer",
+        attempt: 1,
+        workflowRules: rules,
+      }),
+    );
+    expect(d.kind).toBe("rearm");
+    if (d.kind === "rearm") {
+      expect(d.patch.status).toBe("pending");
+      // Delay 120 minutes = 7200 seconds
+      expect(d.patch.next_attempt_at).toBe(
+        new Date(NOW + 120 * 60 * 1000).toISOString(),
+      );
+    }
+  });
+
+  it("stops calling when max retries limit is reached for call_again rule", () => {
+    const d = decideOutcome(
+      make({
+        callStatus: "no_answer",
+        attempt: 3,
+        campaign: {
+          max_attempts: 3,
+          max_callbacks: 0,
+          retry_interval_seconds: INTERVAL,
+          retry_on: ["no_answer"],
+        },
+        workflowRules: rules,
+      }),
+    );
+    expect(d.kind).toBe("fail");
+    if (d.kind === "fail") {
+      expect(d.patch.status).toBe("failed");
+      expect(d.patch.last_error).toContain("Max retries reached");
+    }
+  });
+
+  it("stops calling when max_connected_attempts cap is reached on completed call", () => {
+    const d = decideOutcome(
+      make({
+        callStatus: "completed",
+        callOutcome: "callback_requested",
+        connectedCount: 1,
+        campaign: {
+          max_attempts: 5,
+          max_connected_attempts: 1,
+          max_callbacks: 2,
+          retry_interval_seconds: INTERVAL,
+          retry_on: [],
+        },
+        workflowRules: rules,
+      }),
+    );
+    expect(d.kind).toBe("succeed");
+    if (d.kind === "succeed") {
+      expect(d.patch.status).toBe("succeeded");
+    }
+  });
+});
+
 describe("callbackTime", () => {
   it("returns the requested time when it is in the future", () => {
     const future = new Date(NOW + 5000).toISOString();
@@ -350,3 +473,4 @@ const _allTriggers: CampaignRetryTrigger[] = [
   "canceled",
 ];
 void _allTriggers;
+

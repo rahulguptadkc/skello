@@ -163,6 +163,7 @@ export interface DueContact {
   name: string | null;
   metadata: Record<string, unknown>;
   attempt: number;
+  connected_count?: number;
   // Honored callbacks grant extra dial allowance on top of max_attempts.
   callback_count: number;
   // All-resting deferrals so far (drives backoff → least-bad fallback).
@@ -172,6 +173,7 @@ export interface DueContact {
     organisation_id: string;
     status: string;
     max_attempts: number;
+    max_connected_attempts?: number;
     agent_id: string | null;
     from_phone_number: string | null;
     from_phone_numbers: string[] | null;
@@ -371,16 +373,36 @@ export async function dispatchDueCampaignContacts(): Promise<DispatchResult> {
     .eq("status", "scheduled")
     .lte("scheduled_at", nowIso);
 
-  const { data, error } = await admin
+  let { data, error } = await admin
     .from("campaign_contacts")
     .select(
-      "id, campaign_id, organisation_id, phone, name, metadata, attempt, callback_count, health_defer_count, campaign:campaigns!campaign_id(id, organisation_id, status, max_attempts, agent_id, from_phone_number, from_phone_numbers, switch_connect_rate_floor, switch_window_minutes, switch_min_samples, calling_window_start_minute, calling_window_end_minute, calling_window_days, calling_window_timezone)",
+      "id, campaign_id, organisation_id, phone, name, metadata, attempt, connected_count, callback_count, health_defer_count, campaign:campaigns!campaign_id(id, organisation_id, status, max_attempts, max_connected_attempts, agent_id, from_phone_number, from_phone_numbers, switch_connect_rate_floor, switch_window_minutes, switch_min_samples, calling_window_start_minute, calling_window_end_minute, calling_window_days, calling_window_timezone)",
     )
     .eq("status", "pending")
     .lte("next_attempt_at", nowIso)
     .order("next_attempt_at", { ascending: true })
     .limit(BATCH_LIMIT * 2)
     .returns<DueContact[]>();
+
+  if (
+    error &&
+    (error.message.includes("connected_count") ||
+      error.message.includes("max_connected_attempts") ||
+      error.message.includes("does not exist"))
+  ) {
+    const fallbackRes = await admin
+      .from("campaign_contacts")
+      .select(
+        "id, campaign_id, organisation_id, phone, name, metadata, attempt, callback_count, health_defer_count, campaign:campaigns!campaign_id(id, organisation_id, status, max_attempts, agent_id, from_phone_number, from_phone_numbers, switch_connect_rate_floor, switch_window_minutes, switch_min_samples, calling_window_start_minute, calling_window_end_minute, calling_window_days, calling_window_timezone)",
+      )
+      .eq("status", "pending")
+      .lte("next_attempt_at", nowIso)
+      .order("next_attempt_at", { ascending: true })
+      .limit(BATCH_LIMIT * 2)
+      .returns<DueContact[]>();
+    data = fallbackRes.data;
+    error = fallbackRes.error;
+  }
 
   if (error) {
     console.error("[campaigns dispatch] fetch failed", error);
@@ -395,6 +417,7 @@ export async function dispatchDueCampaignContacts(): Promise<DispatchResult> {
     // Dial allowance = technical retries (max_attempts) + one per honored
     // callback. A customer-requested callback never gets starved by no-answers.
     if (c.attempt >= c.campaign.max_attempts + c.callback_count) continue;
+    if ((c.connected_count ?? 0) >= (c.campaign.max_connected_attempts ?? 1)) continue;
     const used = perCampaign.get(c.campaign_id) ?? 0;
     if (used >= PER_CAMPAIGN_LIMIT) continue;
     perCampaign.set(c.campaign_id, used + 1);

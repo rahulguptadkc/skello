@@ -12,6 +12,7 @@ import {
   SearchXIcon,
   SquareIcon,
   Trash2Icon,
+  WorkflowIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -265,6 +266,9 @@ export function CampaignsTable({
                 Campaign
               </th>
               <th scope="col" className="px-3 py-3 font-medium">
+                Workflow
+              </th>
+              <th scope="col" className="px-3 py-3 font-medium">
                 Status
               </th>
               <th scope="col" className="px-4 py-3 font-medium">
@@ -321,6 +325,21 @@ export function CampaignsTable({
                           {c.total_contacts.toLocaleString()} contacts
                         </span>
                       </p>
+                    </td>
+
+                    <td className="px-3 py-3.5">
+                      {c.workflow_name || c.workflow_id ? (
+                        <span className="inline-flex items-center gap-1.5 rounded-md bg-muted/60 px-2 py-1 text-xs font-medium text-foreground border border-border/50">
+                          <WorkflowIcon className="size-3 text-muted-foreground" />
+                          <span className="max-w-36 truncate">
+                            {c.workflow_name || "Custom Workflow"}
+                          </span>
+                        </span>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">
+                          Default rules
+                        </span>
+                      )}
                     </td>
 
                     <td className="px-3 py-3.5">

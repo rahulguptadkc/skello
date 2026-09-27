@@ -2,6 +2,7 @@ import {
   Building2Icon,
   CodeIcon,
   CreditCardIcon,
+  GitForkIcon,
   LayoutGridIcon,
   MessageCircleIcon,
   PackageCheckIcon,
@@ -77,6 +78,12 @@ const LEADS_SECTION: NavSection = {
 const SYSTEM_SECTION: NavSection = {
   label: "System",
   items: [
+    {
+      href: "/workflows",
+      label: "Workflows",
+      icon: GitForkIcon,
+      keywords: ["workflows", "call outcome", "automation", "ladder", "agent"],
+    },
     {
       href: "/integrations",
       label: "Integrations",

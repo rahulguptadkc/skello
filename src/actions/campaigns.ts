@@ -30,8 +30,20 @@ import { FALLBACK_OUTCOME_KEY } from "@/types/outcome-policy";
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
-const CAMPAIGN_COLUMNS =
+const BASE_CAMPAIGN_COLUMNS =
   "id, organisation_id, created_by, name, file_name, agent_id, from_phone_number, from_phone_numbers, status, scheduled_at, started_at, completed_at, max_attempts, max_callbacks, retry_interval_seconds, retry_on, switch_connect_rate_floor, switch_window_minutes, switch_min_samples, calling_window_start_minute, calling_window_end_minute, calling_window_days, calling_window_timezone, total_contacts, valid_contacts, succeeded_count, failed_count, in_flight_count, created_at, updated_at";
+
+const CAMPAIGN_COLUMNS = `${BASE_CAMPAIGN_COLUMNS}, workflow_id, workflow_name, max_connected_attempts`;
+
+function normalizeCampaign(row: Partial<Campaign> | null): Campaign | null {
+  if (!row) return null;
+  return {
+    ...row,
+    workflow_id: row.workflow_id ?? null,
+    workflow_name: row.workflow_name ?? null,
+    max_connected_attempts: row.max_connected_attempts ?? 1,
+  } as Campaign;
+}
 
 async function requireUser() {
   const supabase = await createClient();
@@ -150,35 +162,78 @@ export async function createCampaign(
   const isRunNow = parsed.data.schedule_mode === "now";
   const scheduledAt = isRunNow ? null : parsed.data.scheduled_at!;
 
-  const { data: campaignRow, error: campaignErr } = await admin
+  let workflowName: string | null = parsed.data.workflow_name ?? null;
+  if (parsed.data.workflow_id && !workflowName) {
+    try {
+      const { data: wf } = await admin
+        .from("workflows")
+        .select("name")
+        .eq("id", parsed.data.workflow_id)
+        .maybeSingle<{ name: string }>();
+      if (wf?.name) workflowName = wf.name;
+    } catch {
+      // ignore
+    }
+  }
+
+  const insertPayload = {
+    organisation_id: parsed.data.organisation_id,
+    created_by: user.id,
+    name: parsed.data.name,
+    file_name: parsed.data.file_name ?? null,
+    agent_id: parsed.data.agent_id,
+    from_phone_number: parsed.data.from_phone_number,
+    from_phone_numbers: pool,
+    workflow_id: parsed.data.workflow_id ?? null,
+    workflow_name: workflowName,
+    status: isRunNow ? "in_progress" : "scheduled",
+    scheduled_at: scheduledAt,
+    started_at: isRunNow ? new Date().toISOString() : null,
+    max_attempts: parsed.data.max_attempts,
+    max_connected_attempts: parsed.data.max_connected_attempts,
+    retry_interval_seconds: parsed.data.retry_interval_seconds,
+    retry_on: parsed.data.retry_on,
+    switch_connect_rate_floor: parsed.data.switch_connect_rate_floor,
+    switch_window_minutes: parsed.data.switch_window_minutes,
+    switch_min_samples: parsed.data.switch_min_samples,
+    // Calling window: all-or-nothing. Null window → all three columns null and
+    // an empty day set (the DB default), meaning "dial any time".
+    calling_window_start_minute:
+      parsed.data.calling_window?.start_minute ?? null,
+    calling_window_end_minute: parsed.data.calling_window?.end_minute ?? null,
+    calling_window_days: parsed.data.calling_window?.days ?? [],
+    calling_window_timezone: parsed.data.calling_window?.timezone ?? null,
+  };
+
+  let campaignRow: Campaign | null = null;
+  let campaignErr: { message: string } | null = null;
+
+  const insertRes = await admin
     .from("campaigns")
-    .insert({
-      organisation_id: parsed.data.organisation_id,
-      created_by: user.id,
-      name: parsed.data.name,
-      file_name: parsed.data.file_name ?? null,
-      agent_id: parsed.data.agent_id,
-      from_phone_number: parsed.data.from_phone_number,
-      from_phone_numbers: pool,
-      status: isRunNow ? "in_progress" : "scheduled",
-      scheduled_at: scheduledAt,
-      started_at: isRunNow ? new Date().toISOString() : null,
-      max_attempts: parsed.data.max_attempts,
-      retry_interval_seconds: parsed.data.retry_interval_seconds,
-      retry_on: parsed.data.retry_on,
-      switch_connect_rate_floor: parsed.data.switch_connect_rate_floor,
-      switch_window_minutes: parsed.data.switch_window_minutes,
-      switch_min_samples: parsed.data.switch_min_samples,
-      // Calling window: all-or-nothing. Null window → all three columns null and
-      // an empty day set (the DB default), meaning "dial any time".
-      calling_window_start_minute:
-        parsed.data.calling_window?.start_minute ?? null,
-      calling_window_end_minute: parsed.data.calling_window?.end_minute ?? null,
-      calling_window_days: parsed.data.calling_window?.days ?? [],
-      calling_window_timezone: parsed.data.calling_window?.timezone ?? null,
-    })
+    .insert(insertPayload)
     .select(CAMPAIGN_COLUMNS)
     .single<Campaign>();
+
+  if (
+    insertRes.error &&
+    (insertRes.error.message.includes("workflow_id") ||
+      insertRes.error.message.includes("workflow_name") ||
+      insertRes.error.message.includes("max_connected_attempts") ||
+      insertRes.error.message.includes("does not exist"))
+  ) {
+    // Retry without columns that might not exist yet in DB schema
+    const { workflow_id: _wf, workflow_name: _wfn, max_connected_attempts: _mca, ...fallbackPayload } = insertPayload;
+    const fallbackRes = await admin
+      .from("campaigns")
+      .insert(fallbackPayload)
+      .select(BASE_CAMPAIGN_COLUMNS)
+      .single<Partial<Campaign>>();
+    campaignRow = normalizeCampaign(fallbackRes.data);
+    campaignErr = fallbackRes.error;
+  } else {
+    campaignRow = normalizeCampaign(insertRes.data);
+    campaignErr = insertRes.error;
+  }
 
   if (campaignErr || !campaignRow) {
     return fail(campaignErr?.message ?? "Could not create campaign");
@@ -268,7 +323,8 @@ export async function runCampaignNow(
     .eq("status", "pending");
   if (armErr) return fail(armErr.message);
 
-  const { data, error } = await admin
+  let campaignData: Campaign | null = null;
+  const updateRes = await admin
     .from("campaigns")
     .update({
       status: "in_progress",
@@ -279,7 +335,34 @@ export async function runCampaignNow(
     .select(CAMPAIGN_COLUMNS)
     .single<Campaign>();
 
-  if (error || !data) return fail(error?.message ?? "Could not start campaign");
+  if (
+    updateRes.error &&
+    (updateRes.error.message.includes("workflow_id") ||
+      updateRes.error.message.includes("max_connected_attempts") ||
+      updateRes.error.message.includes("does not exist"))
+  ) {
+    const fallbackRes = await admin
+      .from("campaigns")
+      .update({
+        status: "in_progress",
+        started_at: now,
+        completed_at: null,
+      })
+      .eq("id", existing.id)
+      .select(BASE_CAMPAIGN_COLUMNS)
+      .single<Partial<Campaign>>();
+    if (fallbackRes.error || !fallbackRes.data) {
+      return fail(fallbackRes.error?.message ?? "Could not start campaign");
+    }
+    campaignData = normalizeCampaign(fallbackRes.data)!;
+  } else {
+    if (updateRes.error || !updateRes.data) {
+      return fail(updateRes.error?.message ?? "Could not start campaign");
+    }
+    campaignData = normalizeCampaign(updateRes.data)!;
+  }
+
+  const data = campaignData;
 
   // Same inline dispatch as createCampaign — flip-to-running should also
   // dial immediately rather than waiting for the next cron tick.
@@ -329,17 +412,39 @@ export async function stopCampaign(
     .eq("status", "pending");
   if (skipErr) return fail(skipErr.message);
 
-  const { data, error } = await admin
+  let stoppedData: Campaign | null = null;
+  const stopRes = await admin
     .from("campaigns")
     .update({ status: "stopped", completed_at: new Date().toISOString() })
     .eq("id", existing.id)
     .select(CAMPAIGN_COLUMNS)
     .single<Campaign>();
 
-  if (error || !data) return fail(error?.message ?? "Could not stop campaign");
+  if (
+    stopRes.error &&
+    (stopRes.error.message.includes("workflow_id") ||
+      stopRes.error.message.includes("max_connected_attempts") ||
+      stopRes.error.message.includes("does not exist"))
+  ) {
+    const fallbackRes = await admin
+      .from("campaigns")
+      .update({ status: "stopped", completed_at: new Date().toISOString() })
+      .eq("id", existing.id)
+      .select(BASE_CAMPAIGN_COLUMNS)
+      .single<Partial<Campaign>>();
+    if (fallbackRes.error || !fallbackRes.data) {
+      return fail(fallbackRes.error?.message ?? "Could not stop campaign");
+    }
+    stoppedData = normalizeCampaign(fallbackRes.data)!;
+  } else {
+    if (stopRes.error || !stopRes.data) {
+      return fail(stopRes.error?.message ?? "Could not stop campaign");
+    }
+    stoppedData = normalizeCampaign(stopRes.data)!;
+  }
 
   revalidatePath("/campaigns");
-  return ok(data);
+  return ok(stoppedData);
 }
 
 // Soft-delete a campaign and its footprint: the campaign hides from every
@@ -441,10 +546,66 @@ export async function listCampaigns(
     }
   }
 
-  const { data, error, count } = await query.returns<Campaign[]>();
+  let { data, error, count } = await query.returns<Campaign[]>();
+  if (
+    error &&
+    (error.message.includes("workflow_id") ||
+      error.message.includes("max_connected_attempts") ||
+      error.message.includes("does not exist"))
+  ) {
+    let fallbackQuery = supabase
+      .from("campaigns")
+      .select(BASE_CAMPAIGN_COLUMNS, { count: "exact" })
+      .eq("organisation_id", parsed.data.organisation_id)
+      .order("created_at", { ascending: false })
+      .range(parsed.data.offset, parsed.data.offset + parsed.data.limit - 1);
+
+    if (parsed.data.status) fallbackQuery = fallbackQuery.eq("status", parsed.data.status);
+    if (term) {
+      const safe = term.replace(/[%,]/g, " ").trim();
+      if (safe.length > 0) {
+        fallbackQuery = fallbackQuery.or(`name.ilike.%${safe}%,file_name.ilike.%${safe}%`);
+      }
+    }
+    const fallbackRes = await fallbackQuery.returns<Partial<Campaign>[]>();
+    data = (fallbackRes.data ?? []).map((row) => normalizeCampaign(row)!) as Campaign[];
+    error = fallbackRes.error;
+    count = fallbackRes.count;
+  } else if (data) {
+    data = data.map((row) => normalizeCampaign(row)!) as Campaign[];
+  }
+
   if (error) return fail(error.message);
 
   const campaigns = data ?? [];
+
+  // Hydrate missing workflow names if any
+  const missingWorkflowIds = Array.from(
+    new Set(
+      campaigns
+        .filter((c) => c.workflow_id && !c.workflow_name)
+        .map((c) => c.workflow_id!),
+    ),
+  );
+  if (missingWorkflowIds.length > 0) {
+    try {
+      const { data: wfRows } = await supabase
+        .from("workflows")
+        .select("id, name")
+        .in("id", missingWorkflowIds);
+      if (wfRows && wfRows.length > 0) {
+        const wfMap = new Map(wfRows.map((w) => [w.id, w.name]));
+        for (const c of campaigns) {
+          if (c.workflow_id && !c.workflow_name && wfMap.has(c.workflow_id)) {
+            c.workflow_name = wfMap.get(c.workflow_id)!;
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
   const bestByCampaign = await loadCampaignBestDispositions(
     supabase,
     parsed.data.organisation_id,
@@ -617,7 +778,7 @@ export async function getCampaign(
   if (!user) return fail("Not authenticated");
 
   const admin = createAdminClient();
-  const { data, error } = await admin
+  let { data, error } = await admin
     .from("campaigns")
     .select(CAMPAIGN_COLUMNS)
     .eq("id", parsed.data.id)
@@ -625,11 +786,44 @@ export async function getCampaign(
     // campaigns explicitly — a bookmarked detail URL must 404 after deletion.
     .is("deleted_at", null)
     .maybeSingle<Campaign>();
+
+  if (
+    error &&
+    (error.message.includes("workflow_id") ||
+      error.message.includes("max_connected_attempts") ||
+      error.message.includes("does not exist"))
+  ) {
+    const fallbackRes = await admin
+      .from("campaigns")
+      .select(BASE_CAMPAIGN_COLUMNS)
+      .eq("id", parsed.data.id)
+      .is("deleted_at", null)
+      .maybeSingle<Partial<Campaign>>();
+    data = normalizeCampaign(fallbackRes.data);
+    error = fallbackRes.error;
+  } else if (data) {
+    data = normalizeCampaign(data);
+  }
+
   if (error) return fail(error.message);
   if (!data) return fail("Campaign not found");
   if (!(await userOwnsOrg(supabase, user.id, data.organisation_id))) {
     return fail("Forbidden");
   }
+
+  if (data.workflow_id && !data.workflow_name) {
+    try {
+      const { data: wf } = await admin
+        .from("workflows")
+        .select("name")
+        .eq("id", data.workflow_id)
+        .maybeSingle<{ name: string }>();
+      if (wf?.name) data.workflow_name = wf.name;
+    } catch {
+      // ignore
+    }
+  }
+
   return ok(data);
 }
 

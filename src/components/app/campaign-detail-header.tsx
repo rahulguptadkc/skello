@@ -8,6 +8,7 @@ import {
   MoreHorizontalIcon,
   PlayIcon,
   SquareIcon,
+  WorkflowIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -101,6 +102,12 @@ export function CampaignDetailHeader({
               ) : null}
               {CAMPAIGN_STATUS_LABEL[campaign.status]}
             </Badge>
+            {campaign.workflow_name || campaign.workflow_id ? (
+              <Badge variant="outline" className="gap-1 font-normal text-xs">
+                <WorkflowIcon className="size-3 text-muted-foreground" />
+                {campaign.workflow_name || "Custom Workflow"}
+              </Badge>
+            ) : null}
           </div>
           <p className="text-sm leading-relaxed text-muted-foreground">
             {campaign.file_name ?? "Campaign"} ·{" "}

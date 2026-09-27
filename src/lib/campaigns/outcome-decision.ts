@@ -4,10 +4,11 @@ import {
   FALLBACK_OUTCOME_KEY,
   type ResolvedOutcomePolicy,
 } from "@/types/outcome-policy";
+import type { OutcomeRule } from "@/types/workflow";
 
 // Pure decision core for the campaign-contact state machine. No I/O — given a
 // finished call + the contact's counters + the campaign's retry config + the
-// org's outcome policy, it returns WHAT should happen and the exact column
+// org's outcome policy / workflow rules, it returns WHAT should happen and the exact column
 // patch. The async applier (outcome.ts) does the DB reads/writes and the lead
 // conversion. Keeping this pure makes the whole decision table unit-testable
 // with zero mocks.
@@ -38,13 +39,16 @@ export interface DecideOutcomeInput {
   callId: string;
   // Contact counters.
   attempt: number;
+  connectedCount?: number;
   callbackCount: number;
   campaign: {
     max_attempts: number;
+    max_connected_attempts?: number;
     max_callbacks: number;
     retry_interval_seconds: number;
     retry_on: CampaignRetryTrigger[];
   };
+  workflowRules?: OutcomeRule[] | null;
   // The org's resolved outcome policy: per-key action + fallback action for any
   // label not in the org's configured set.
   policy: ResolvedOutcomePolicy;
@@ -61,19 +65,120 @@ export type OutcomeDecision =
   | { kind: "rearm"; patch: Record<string, unknown> };
 
 export function decideOutcome(input: DecideOutcomeInput): OutcomeDecision {
-  const { callStatus, callId, attempt, callbackCount, campaign, policy, now } =
-    input;
+  const {
+    callStatus,
+    callId,
+    attempt,
+    connectedCount = 0,
+    callbackCount,
+    campaign,
+    workflowRules,
+    policy,
+    now,
+  } = input;
 
   if (!TERMINAL_STATUSES.has(callStatus)) return { kind: "noop" };
 
-  const basePatch = { last_status: callStatus, last_call_id: callId };
+  const isConnected = callStatus === "completed";
+  const nextConnectedCount = isConnected ? connectedCount + 1 : connectedCount;
+  const maxConnectedAttempts = campaign.max_connected_attempts ?? 1;
+
+  const basePatch = {
+    last_status: callStatus,
+    last_call_id: callId,
+  };
+
+  const outcomeKey = input.callOutcome ?? (isConnected ? FALLBACK_OUTCOME_KEY : callStatus);
+
+  // ---- Workflow rules engine (if a workflow is linked) --------------------
+  if (workflowRules && workflowRules.length > 0) {
+    const keyToMatch = (outcomeKey || "").toLowerCase().trim();
+    const statusToMatch = (callStatus || "").toLowerCase().trim();
+
+    const matchedRule = workflowRules.find((r) =>
+      r.variables.some((v) => {
+        const vt = v.toLowerCase().trim();
+        return (
+          vt === keyToMatch ||
+          vt === statusToMatch ||
+          keyToMatch.includes(vt) ||
+          statusToMatch.includes(vt)
+        );
+      }),
+    );
+
+    if (matchedRule) {
+      if (matchedRule.action === "stop_calling") {
+        if (isConnected) {
+          return succeedDecision(basePatch, outcomeKey);
+        }
+        return {
+          kind: "fail",
+          patch: {
+            ...basePatch,
+            status: "failed",
+            last_error: `Workflow action: Stop calling (${matchedRule.variables.join(", ")})`,
+            last_outcome: outcomeKey,
+          },
+        };
+      }
+
+      if (matchedRule.action === "call_again") {
+        // Connected attempts cap (if configured)
+        if (
+          isConnected &&
+          campaign.max_connected_attempts !== undefined &&
+          nextConnectedCount >= campaign.max_connected_attempts
+        ) {
+          return succeedDecision(basePatch, outcomeKey);
+        }
+
+        // Max retries cap
+        const allowedAttempts =
+          Math.max(campaign.max_attempts, (matchedRule.retries ?? 0) + 1) +
+          callbackCount;
+        if (attempt >= allowedAttempts) {
+          if (isConnected) {
+            return succeedDecision(basePatch, outcomeKey);
+          }
+          return {
+            kind: "fail",
+            patch: {
+              ...basePatch,
+              status: "failed",
+              last_error: `Max retries reached (${matchedRule.retries ?? campaign.max_attempts} retries limit)`,
+              last_outcome: outcomeKey,
+            },
+          };
+        }
+
+        const delaySec = matchedRule.delay_minutes
+          ? matchedRule.delay_minutes * 60
+          : campaign.retry_interval_seconds;
+
+        return {
+          kind: "rearm",
+          patch: {
+            ...basePatch,
+            status: "pending",
+            next_attempt_at: callbackTime(
+              input.requestedCallbackAt,
+              delaySec,
+              now,
+            ),
+            last_error: null,
+            last_outcome: outcomeKey,
+          },
+        };
+      }
+    }
+  }
 
   // ---- Disposition tier (completed calls only) ----------------------------
   if (callStatus === "completed") {
     // Record the actual key the agent emitted (or the reserved fallback when
     // none was extracted) so stats can map it back to the policy. Resolve the
     // ACTION via the policy, falling back for any unconfigured key.
-    const outcomeKey = input.callOutcome ?? FALLBACK_OUTCOME_KEY;
     const action = policy.actions[outcomeKey] ?? policy.fallbackAction;
 
     if (action === "callback") {

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist_Mono, Inter } from "next/font/google";
+import Script from "next/script";
 
 import "./globals.css";
 
@@ -40,11 +41,12 @@ export default function RootLayout({
       suppressHydrationWarning
     >
       <head>
-        {/* Applies the stored theme to <html> before first paint. It lives here,
-            in a Server Component, on purpose: rendered from a client component
-            (which is what next-themes did) React 19 warns that the script never
-            executes — and it would be right. */}
-        <script dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP_SCRIPT }} />
+        {/* Applies the stored theme to <html> before first paint to prevent flash of unstyled content */}
+        <Script
+          id="theme-bootstrap"
+          strategy="beforeInteractive"
+          dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP_SCRIPT }}
+        />
       </head>
       <body className="min-h-full bg-background text-foreground">
         <ThemeProvider>

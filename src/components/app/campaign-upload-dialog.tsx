@@ -12,6 +12,8 @@ import {
   FileSpreadsheetIcon,
   FileTextIcon,
   Loader2Icon,
+  MinusIcon,
+  PlusIcon,
   RotateCcwIcon,
   SearchIcon,
   SparklesIcon,
@@ -45,10 +47,12 @@ import {
 import { VoiceConfigDialog } from "@/components/app/voice-config-dialog";
 import { createCampaign } from "@/actions/campaigns";
 import { getVoiceConfig } from "@/actions/voice-config";
+import { listWorkflows } from "@/actions/workflows";
 import { parseCampaignCsv, type ParsedCsv } from "@/lib/campaigns/csv-parse";
 import { cn } from "@/lib/utils";
 import type { CampaignRetryTrigger } from "@/types/campaign";
 import type { VoiceConfig } from "@/types/voice-config";
+import type { Workflow } from "@/types/workflow";
 
 type ScheduleMode = "now" | "later";
 
@@ -70,26 +74,6 @@ function timeToMinutes(t: string): number {
   return (h || 0) * 60 + (m || 0);
 }
 
-const RETRY_INTERVAL_OPTIONS: { value: number; label: string }[] = [
-  { value: 5 * 60, label: "5 min" },
-  { value: 15 * 60, label: "15 min" },
-  { value: 30 * 60, label: "30 min" },
-  { value: 60 * 60, label: "60 min" },
-  { value: 4 * 60 * 60, label: "4 hr" },
-  { value: 24 * 60 * 60, label: "24 hr" },
-];
-
-const RETRY_TRIGGER_OPTIONS: {
-  value: CampaignRetryTrigger;
-  label: string;
-  hint: string;
-}[] = [
-  { value: "no_answer", label: "No answer", hint: "Recipient did not pick up" },
-  { value: "busy", label: "Busy", hint: "Line was busy" },
-  { value: "failed", label: "Failed", hint: "Provider error or unreachable" },
-  { value: "canceled", label: "Canceled", hint: "Call ended before connect" },
-];
-
 const DEFAULT_RETRY_TRIGGERS: CampaignRetryTrigger[] = [
   "no_answer",
   "busy",
@@ -106,7 +90,7 @@ const SAMPLE_CSV =
   "+1 (415) 555-0199,Alex Patel,Tesla Model 3,San Francisco,2026-04-30\r\n";
 
 function downloadSampleCsv() {
-  const blob = new Blob([`﻿${SAMPLE_CSV}`], {
+  const blob = new Blob([`\ufeff${SAMPLE_CSV}`], {
     type: "text/csv;charset=utf-8",
   });
   const url = URL.createObjectURL(blob);
@@ -154,8 +138,9 @@ export function CampaignUploadDialog({
   const [scheduleMode, setScheduleMode] = React.useState<ScheduleMode>("now");
   const [scheduledAt, setScheduledAt] =
     React.useState<string>(defaultScheduleAt());
-  const [retries, setRetries] = React.useState<number>(2);
-  const [retryInterval, setRetryInterval] = React.useState<number>(15 * 60);
+  const [maxRetries, setMaxRetries] = React.useState<number>(1);
+  const [retryIntervalMinutes, setRetryIntervalMinutes] = React.useState<number>(30);
+  const [maxConnectedAttempts, setMaxConnectedAttempts] = React.useState<number>(1);
   const [retryOn, setRetryOn] = React.useState<CampaignRetryTrigger[]>(
     DEFAULT_RETRY_TRIGGERS,
   );
@@ -176,6 +161,11 @@ export function CampaignUploadDialog({
   );
   const [submitting, setSubmitting] = React.useState(false);
 
+  // Workflows state
+  const [workflows, setWorkflows] = React.useState<Workflow[]>([]);
+  const [workflowChoice, setWorkflowChoice] = React.useState<string>("");
+  const [workflowsLoading, setWorkflowsLoading] = React.useState(false);
+
   // Voice config (agents + dialling numbers). Fetched lazily once the dialog
   // opens; the empty-string select value means "use the workspace default".
   const [voiceConfig, setVoiceConfig] = React.useState<VoiceConfig | null>(
@@ -189,8 +179,23 @@ export function CampaignUploadDialog({
 
   const loadVoiceConfig = React.useCallback(async () => {
     setVoiceLoading(true);
-    const res = await getVoiceConfig({ organisation_id: organisationId });
+    setWorkflowsLoading(true);
+    const [res, wfRes] = await Promise.all([
+      getVoiceConfig({ organisation_id: organisationId }),
+      listWorkflows(organisationId),
+    ]);
     setVoiceLoading(false);
+    setWorkflowsLoading(false);
+
+    if (wfRes.success && wfRes.data) {
+      setWorkflows(wfRes.data);
+      setWorkflowChoice((prev) => {
+        if (prev) return prev;
+        const def = wfRes.data.find((w) => w.is_active) || wfRes.data[0];
+        return def ? def.id : "";
+      });
+    }
+
     if (!res.success) {
       toast.error(res.error);
       return;
@@ -223,8 +228,9 @@ export function CampaignUploadDialog({
     setDragOver(false);
     setScheduleMode("now");
     setScheduledAt(defaultScheduleAt());
-    setRetries(2);
-    setRetryInterval(15 * 60);
+    setMaxRetries(1);
+    setRetryIntervalMinutes(30);
+    setMaxConnectedAttempts(1);
     setRetryOn(DEFAULT_RETRY_TRIGGERS);
     setSwitchFloor("30");
     setSwitchWindow("60");
@@ -234,6 +240,7 @@ export function CampaignUploadDialog({
     setWindowDays([1, 2, 3, 4, 5]);
     setSubmitting(false);
     setAgentChoice("");
+    setWorkflowChoice("");
     setFromPhoneChoices([]);
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
@@ -449,6 +456,8 @@ export function CampaignUploadDialog({
       };
     }
 
+    const chosenWf = workflows.find((w) => w.id === workflowChoice);
+
     setSubmitting(true);
     try {
       const result = await createCampaign({
@@ -466,8 +475,11 @@ export function CampaignUploadDialog({
         from_phone_number:
           fromPhoneChoices.length === 1 ? fromPhoneChoices[0] : null,
         from_phone_numbers: fromPhoneChoices,
-        max_attempts: retries + 1,
-        retry_interval_seconds: retryInterval,
+        workflow_id: workflowChoice || null,
+        workflow_name: chosenWf?.name || null,
+        max_attempts: maxRetries + 1,
+        max_connected_attempts: maxConnectedAttempts,
+        retry_interval_seconds: retryIntervalMinutes * 60,
         retry_on: retryOn,
         switch_connect_rate_floor: floor,
         switch_window_minutes: windowMin,
@@ -633,8 +645,8 @@ export function CampaignUploadDialog({
                             >
                               <RotateCcwIcon
                                 className={cn(
-                                  "size-3 mr-1",
-                                  parsing && "animate-spin",
+                                   "size-3 mr-1",
+                                   parsing && "animate-spin",
                                 )}
                               />
                               Retry clean
@@ -749,6 +761,7 @@ export function CampaignUploadDialog({
                 }}
               />
             </div>
+
             <div className="grid gap-1.5">
               <Label htmlFor="campaign-agent" className="text-xs">
                 Voice agent
@@ -1056,117 +1069,85 @@ export function CampaignUploadDialog({
             ) : null}
           </div>
 
-          <div className="grid gap-3 rounded-lg border border-border/60 bg-muted/30 p-3.5">
-            <div className="grid gap-1">
-              <div className="flex items-center justify-between">
-                <Label
-                  htmlFor="campaign-retries"
-                  className="text-xs uppercase tracking-wider text-muted-foreground"
-                >
-                  Retry settings
-                </Label>
-                <span className="text-xs tabular-nums text-muted-foreground">
-                  {retries === 0
-                    ? "No retries"
-                    : `${retries} retr${retries === 1 ? "y" : "ies"}`}
-                </span>
-              </div>
-              <input
-                id="campaign-retries"
-                type="range"
-                min={0}
-                max={9}
-                step={1}
-                value={retries}
-                onChange={(e) => setRetries(Number(e.target.value))}
-                disabled={submitting}
-                className="w-full cursor-pointer accent-foreground"
-              />
-              <div className="flex justify-between px-0.5 text-[10px] text-muted-foreground">
-                {Array.from({ length: 10 }, (_, n) => (
-                  <span key={n} className="tabular-nums">
-                    {n}
-                  </span>
-                ))}
-              </div>
-            </div>
-
-            <div className="grid gap-1.5">
-              <Label htmlFor="campaign-interval" className="text-xs">
-                Wait between retries
+          <div className="grid gap-3.5 rounded-lg border border-border/60 bg-muted/30 p-3.5">
+            <div>
+              <Label className="text-sm font-semibold tracking-tight text-foreground">
+                Retry Configuration
               </Label>
-              <Select
-                value={String(retryInterval)}
-                onValueChange={(v) => setRetryInterval(Number(v))}
-                disabled={submitting || retries === 0}
-              >
-                <SelectTrigger id="campaign-interval" className="w-full">
-                  {/* base-ui's Value renders the underlying string value
-                      ("900") by default; map it back to the friendly label
-                      ("15 min") so the trigger doesn't show seconds. */}
-                  <SelectValue>
-                    {(value: unknown) => {
-                      const found = RETRY_INTERVAL_OPTIONS.find(
-                        (o) => String(o.value) === value,
-                      );
-                      return found ? found.label : "—";
-                    }}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  {RETRY_INTERVAL_OPTIONS.map((o) => (
-                    <SelectItem key={o.value} value={String(o.value)}>
-                      {o.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Configure retry attempts, backoff window, and maximum connected attempt boundaries.
+              </p>
             </div>
 
-            <div className="grid gap-1.5">
-              <Label className="text-xs">Retry when call ends in</Label>
-              <div className="grid grid-cols-2 gap-1.5">
-                {RETRY_TRIGGER_OPTIONS.map((o) => {
-                  const checked = retryOn.includes(o.value);
-                  return (
-                    <button
-                      key={o.value}
-                      type="button"
-                      onClick={() => toggleRetryTrigger(o.value)}
-                      disabled={submitting || retries === 0}
-                      className={cn(
-                        "flex items-start gap-2 rounded-md border px-2.5 py-1.5 text-left text-xs transition-colors",
-                        checked
-                          ? "border-foreground/30 bg-background"
-                          : "border-border/60 bg-transparent text-muted-foreground hover:bg-background",
-                        (submitting || retries === 0) &&
-                          "cursor-not-allowed opacity-60",
-                      )}
-                    >
-                      <span
-                        className={cn(
-                          "mt-0.5 grid size-3.5 shrink-0 place-items-center rounded border",
-                          checked
-                            ? "border-foreground bg-foreground text-background"
-                            : "border-border",
-                        )}
-                        aria-hidden
-                      >
-                        {checked ? <CheckMark /> : null}
-                      </span>
-                      <span className="flex flex-col gap-0.5">
-                        <span className="font-medium text-foreground">
-                          {o.label}
-                        </span>
-                        <span className="text-[10px] leading-tight">
-                          {o.hint}
-                        </span>
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <StepperInput
+                label="Max Retries"
+                value={maxRetries}
+                onChange={setMaxRetries}
+                min={0}
+                max={10}
+                step={1}
+                disabled={submitting}
+              />
+              <StepperInput
+                label="Retry Interval (mins)"
+                value={retryIntervalMinutes}
+                onChange={setRetryIntervalMinutes}
+                min={1}
+                max={1440}
+                step={5}
+                disabled={submitting || maxRetries === 0}
+              />
+              <StepperInput
+                label="Max connected attempts"
+                value={maxConnectedAttempts}
+                onChange={setMaxConnectedAttempts}
+                min={1}
+                max={20}
+                step={1}
+                disabled={submitting}
+              />
             </div>
+
+            <p className="text-[11px] leading-relaxed text-muted-foreground">
+              Calls will only be placed within the <span className="font-medium text-foreground">Max Retries</span> limit and up to <span className="font-medium text-foreground">{maxConnectedAttempts} connected call{maxConnectedAttempts > 1 ? "s" : ""}</span>. Once reached, the action terminates calling.
+            </p>
+          </div>
+
+          <div className="grid gap-3 rounded-lg border border-border/60 bg-muted/30 p-3.5">
+            <div>
+              <Label htmlFor="campaign-workflow" className="text-sm font-semibold tracking-tight text-foreground">
+                Workflow
+              </Label>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Select which call outcome &amp; retry workflow to execute for this campaign.
+              </p>
+            </div>
+
+            <Select
+              value={workflowChoice}
+              onValueChange={(v) => setWorkflowChoice(v ?? "")}
+              disabled={submitting || workflowsLoading}
+            >
+              <SelectTrigger id="campaign-workflow" className="w-full bg-background">
+                <SelectValue placeholder="Select workflow...">
+                  {(value: unknown) => {
+                    if (typeof value !== "string" || !value) {
+                      return "Select a workflow";
+                    }
+                    const found = workflows.find((w) => w.id === value);
+                    return found ? found.name : "Select a workflow";
+                  }}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {workflows.map((w) => (
+                  <SelectItem key={w.id} value={w.id}>
+                    <span className="font-medium">{w.name}</span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
         </div>
 
@@ -1485,3 +1466,67 @@ function ScheduleRadio({
     </button>
   );
 }
+
+function StepperInput({
+  label,
+  value,
+  onChange,
+  min = 0,
+  max = 100,
+  step = 1,
+  disabled = false,
+}: {
+  label: string;
+  value: number;
+  onChange: (val: number) => void;
+  min?: number;
+  max?: number;
+  step?: number;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="grid gap-1.5">
+      <Label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+        {label}
+      </Label>
+      <div className="flex h-10 items-center justify-between rounded-xl border border-border/80 bg-slate-100/80 dark:bg-slate-800/80 px-1.5 shadow-xs transition-colors hover:border-foreground/30 focus-within:border-ring">
+        <button
+          type="button"
+          disabled={disabled || value <= min}
+          onClick={() => onChange(Math.max(min, value - step))}
+          className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-all hover:bg-background hover:text-foreground active:scale-95 disabled:pointer-events-none disabled:opacity-30"
+          aria-label={`Decrease ${label}`}
+        >
+          <MinusIcon className="size-3.5 stroke-[2.5]" />
+        </button>
+        <input
+          type="number"
+          min={min}
+          max={max}
+          step={step}
+          value={value}
+          disabled={disabled}
+          onChange={(e) => {
+            const parsed = parseInt(e.target.value, 10);
+            if (!isNaN(parsed)) {
+              onChange(Math.max(min, Math.min(max, parsed)));
+            } else if (e.target.value === "") {
+              onChange(min);
+            }
+          }}
+          className="w-14 bg-transparent text-center font-bold text-sm tabular-nums text-foreground outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+        />
+        <button
+          type="button"
+          disabled={disabled || value >= max}
+          onClick={() => onChange(Math.min(max, value + step))}
+          className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-all hover:bg-background hover:text-foreground active:scale-95 disabled:pointer-events-none disabled:opacity-30"
+          aria-label={`Increase ${label}`}
+        >
+          <PlusIcon className="size-3.5 stroke-[2.5]" />
+        </button>
+      </div>
+    </div>
+  );
+}
+

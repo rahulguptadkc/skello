@@ -37,7 +37,10 @@ export interface Campaign {
   scheduled_at: string | null;
   started_at: string | null;
   completed_at: string | null;
+  workflow_id?: string | null;
+  workflow_name?: string | null;
   max_attempts: number;
+  max_connected_attempts?: number;
   // Max customer-requested callbacks ("call me later") honored per contact,
   // independent of max_attempts. 0 disables callback honoring.
   max_callbacks: number;

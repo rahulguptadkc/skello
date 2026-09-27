@@ -92,7 +92,10 @@ export const createCampaignSchema = z.object({
     .array(z.string().trim().min(5).max(32))
     .max(50)
     .default([]),
+  workflow_id: z.string().trim().nullish(),
+  workflow_name: z.string().trim().nullish(),
   max_attempts: z.number().int().min(1).max(10),
+  max_connected_attempts: z.number().int().min(1).max(20).default(1),
   retry_interval_seconds: z.number().int().min(60).max(86400),
   retry_on: z.array(campaignRetryTriggerSchema).max(4),
   // Caller-ID switching (connect-rate based). Defaults match the DB so older
