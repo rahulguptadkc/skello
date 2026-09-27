@@ -2,8 +2,10 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import Papa from "papaparse";
 import {
+  ArrowUpRightIcon,
   CheckCircle2Icon,
   CheckIcon,
   DownloadIcon,
@@ -1124,30 +1126,43 @@ export function CampaignUploadDialog({
               </p>
             </div>
 
-            <Select
-              value={workflowChoice}
-              onValueChange={(v) => setWorkflowChoice(v ?? "")}
-              disabled={submitting || workflowsLoading}
-            >
-              <SelectTrigger id="campaign-workflow" className="w-full bg-background">
-                <SelectValue placeholder="Select workflow...">
-                  {(value: unknown) => {
-                    if (typeof value !== "string" || !value) {
-                      return "Select a workflow";
-                    }
-                    const found = workflows.find((w) => w.id === value);
-                    return found ? found.name : "Select a workflow";
-                  }}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                {workflows.map((w) => (
-                  <SelectItem key={w.id} value={w.id}>
-                    <span className="font-medium">{w.name}</span>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {workflows.length > 0 ? (
+              <Select
+                value={workflowChoice}
+                onValueChange={(v) => setWorkflowChoice(v ?? "")}
+                disabled={submitting || workflowsLoading}
+              >
+                <SelectTrigger id="campaign-workflow" className="w-full bg-background">
+                  <SelectValue placeholder="Select workflow...">
+                    {(value: unknown) => {
+                      if (typeof value !== "string" || !value) {
+                        return "Select a workflow";
+                      }
+                      const found = workflows.find((w) => w.id === value);
+                      return found ? found.name : "Select a workflow";
+                    }}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {workflows.map((w) => (
+                    <SelectItem key={w.id} value={w.id}>
+                      <span className="font-medium">{w.name}</span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 rounded-md border border-dashed border-border/70 p-2.5 text-xs text-muted-foreground bg-background">
+                <span>No custom workflows created yet. Default outcome rules will apply.</span>
+                <Link
+                  href="/workflows"
+                  target="_blank"
+                  className="font-medium text-emerald-600 dark:text-emerald-400 hover:underline flex items-center gap-1 shrink-0"
+                >
+                  Create workflow <ArrowUpRightIcon className="size-3" />
+                </Link>
+              </div>
+            )}
           </div>
         </div>
 

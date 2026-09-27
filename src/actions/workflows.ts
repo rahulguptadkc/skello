@@ -18,71 +18,6 @@ import {
 // In-memory workspace cache fallback ensuring zero-downtime if migrations are running
 const workflowStore = new Map<string, Workflow>();
 
-function getDefaultWorkflow(orgId: string): Workflow {
-  const id = `wf_${orgId}_default`;
-  const defaultRules: OutcomeRule[] = [
-    {
-      id: `rule_${id}_1`,
-      variables: ["interested"],
-      action: "stop_calling",
-      retries: 0,
-      agent_id: null,
-    },
-    {
-      id: `rule_${id}_2`,
-      variables: ["not_interested"],
-      action: "stop_calling",
-      retries: 0,
-      agent_id: null,
-    },
-    {
-      id: `rule_${id}_3`,
-      variables: ["callback_requested"],
-      action: "call_again",
-      retries: 2,
-      delay_minutes: 60,
-      agent_id: null,
-    },
-    {
-      id: `rule_${id}_4`,
-      variables: ["no_conversation"],
-      action: "call_again",
-      retries: 2,
-      delay_minutes: 120,
-      agent_id: null,
-    },
-    {
-      id: `rule_${id}_5`,
-      variables: ["no_answer", "busy"],
-      action: "call_again",
-      retries: 2,
-      delay_minutes: 240,
-      agent_id: null,
-    },
-    {
-      id: `rule_${id}_6`,
-      variables: ["wrong_number", "dnd"],
-      action: "stop_calling",
-      retries: 0,
-      agent_id: null,
-    },
-  ];
-
-  return {
-    id,
-    organisation_id: orgId,
-    name: "Primary Call Outcome Workflow",
-    description: "Voice AI call outcome routing and automated retry ladder.",
-    template_id: "call_outcome_ladder",
-    is_active: true,
-    is_default: false,
-    rules: defaultRules,
-    nodes: [],
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  };
-}
-
 export async function listWorkflows(
   organisationId: string,
 ): Promise<ActionResult<Workflow[]>> {
@@ -102,7 +37,7 @@ export async function listWorkflows(
       .eq("organisation_id", organisationId)
       .order("created_at", { ascending: false });
 
-    if (!error && data && data.length > 0) {
+    if (!error && data) {
       const items: Workflow[] = data.map((row: any) => ({
         id: row.id,
         organisation_id: row.organisation_id,
@@ -127,33 +62,10 @@ export async function listWorkflows(
     // Non-blocking database fallback
   }
 
-  // Check in memory store or return default workflow
+  // Check in memory store
   const items = Array.from(workflowStore.values()).filter(
     (w) => w.organisation_id === organisationId,
   );
-
-  if (items.length === 0) {
-    const defaultWf = getDefaultWorkflow(organisationId);
-    workflowStore.set(defaultWf.id, defaultWf);
-
-    try {
-      const admin = createAdminClient();
-      await admin.from("workflows").insert({
-        id: defaultWf.id,
-        organisation_id: organisationId,
-        name: defaultWf.name,
-        description: defaultWf.description,
-        template_id: defaultWf.template_id,
-        rules: defaultWf.rules || [],
-        is_active: defaultWf.is_active,
-        is_default: defaultWf.is_default,
-      });
-    } catch {
-      // Non-blocking fallback
-    }
-
-    return ok([defaultWf]);
-  }
 
   return ok(items);
 }
@@ -205,17 +117,6 @@ export async function getWorkflow(
       return fail("Forbidden");
     }
     return ok(wf);
-  }
-
-  // If starts with default pattern
-  const parts = workflowId.split("_");
-  if (parts.length >= 3 && parts[0] === "wf") {
-    const orgId = parts[1];
-    if (await userCanManageOrg(supabase, user.id, orgId)) {
-      const defaultWf = getDefaultWorkflow(orgId);
-      workflowStore.set(defaultWf.id, defaultWf);
-      return ok(defaultWf);
-    }
   }
 
   return fail("Workflow not found");
@@ -498,8 +399,16 @@ export async function deleteWorkflow(
   const { supabase, user } = await requireUser();
   if (!user) return fail("Not authenticated");
 
-  const wf = workflowStore.get(workflowId);
-  const orgId = wf?.organisation_id || (workflowId.startsWith("wf_") ? workflowId.split("_")[1] : null);
+  const admin = createAdminClient();
+  let orgId = workflowStore.get(workflowId)?.organisation_id;
+  if (!orgId) {
+    const { data: row } = await admin
+      .from("workflows")
+      .select("organisation_id")
+      .eq("id", workflowId)
+      .maybeSingle<{ organisation_id: string }>();
+    orgId = row?.organisation_id;
+  }
 
   if (orgId && !(await userCanManageOrg(supabase, user.id, orgId))) {
     return fail("Forbidden");
@@ -508,7 +417,6 @@ export async function deleteWorkflow(
   workflowStore.delete(workflowId);
 
   try {
-    const admin = createAdminClient();
     await admin.from("workflow_nodes").delete().eq("workflow_id", workflowId);
     await admin.from("workflows").delete().eq("id", workflowId);
   } catch (err) {
