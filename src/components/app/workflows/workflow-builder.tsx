@@ -10,6 +10,7 @@ import {
   ChevronDownIcon,
   Code2Icon,
   CopyIcon,
+  DownloadIcon,
   GripVerticalIcon,
   Loader2Icon,
   MinusIcon,
@@ -142,6 +143,7 @@ export function WorkflowBuilder({
         action: "stop_calling",
         retries: 0,
         agent_id: null,
+        agent_name: null,
       },
       {
         id: "rule_2",
@@ -149,30 +151,31 @@ export function WorkflowBuilder({
         action: "stop_calling",
         retries: 0,
         agent_id: null,
+        agent_name: null,
       },
       {
         id: "rule_3",
         variables: ["callback_requested"],
         action: "call_again",
         retries: 2,
-        agent_id: availableAgents[0]?.id || null,
-        agent_name: availableAgents[0]?.name || "Default agent",
+        agent_id: null,
+        agent_name: null,
       },
       {
         id: "rule_4",
         variables: ["no_conversation"],
         action: "call_again",
         retries: 2,
-        agent_id: availableAgents[0]?.id || null,
-        agent_name: availableAgents[0]?.name || "Default agent",
+        agent_id: null,
+        agent_name: null,
       },
       {
         id: "rule_5",
         variables: ["no_answer", "busy"],
         action: "call_again",
         retries: 2,
-        agent_id: availableAgents[0]?.id || null,
-        agent_name: availableAgents[0]?.name || "Default agent",
+        agent_id: null,
+        agent_name: null,
       },
       {
         id: "rule_6",
@@ -180,6 +183,7 @@ export function WorkflowBuilder({
         action: "stop_calling",
         retries: 0,
         agent_id: null,
+        agent_name: null,
       },
     ];
   });
@@ -202,7 +206,18 @@ export function WorkflowBuilder({
   // Rule modification helpers
   function updateRule(ruleId: string, updates: Partial<OutcomeRule>) {
     setRules((prev) =>
-      prev.map((r) => (r.id === ruleId ? { ...r, ...updates } : r)),
+      prev.map((r) => {
+        if (r.id !== ruleId) return r;
+        const merged = { ...r, ...updates };
+        // If switched to stop_calling, automatically reset retries and clear agent assignment
+        if (merged.action === "stop_calling") {
+          merged.retries = 0;
+          merged.agent_id = null;
+          merged.agent_name = null;
+          merged.delay_minutes = undefined;
+        }
+        return merged;
+      }),
     );
   }
 
@@ -269,8 +284,8 @@ export function WorkflowBuilder({
       variables: initialVariable ? [initialVariable] : [],
       action: "call_again",
       retries: 2,
-      agent_id: availableAgents[0]?.id || null,
-      agent_name: availableAgents[0]?.name || "Arjun",
+      agent_id: null,
+      agent_name: null,
     };
     setRules((prev) => [...prev, newRule]);
     toast.success("New outcome row added");
@@ -282,6 +297,18 @@ export function WorkflowBuilder({
       return;
     }
 
+    // Sanitize rules before saving
+    const sanitizedRules: OutcomeRule[] = rules.map((r, idx) => ({
+      id: r.id || `rule_${workflow.id}_${idx + 1}`,
+      variables: r.variables,
+      action: r.action,
+      retries: r.action === "stop_calling" ? 0 : (r.retries ?? 0),
+      delay_minutes: r.action === "stop_calling" ? undefined : r.delay_minutes,
+      agent_id: r.action === "stop_calling" ? null : (r.agent_id || null),
+      agent_name: r.action === "stop_calling" ? null : (r.agent_name || null),
+      whatsapp_template: r.whatsapp_template || null,
+    }));
+
     setSaving(true);
     try {
       const res = await saveWorkflow({
@@ -290,15 +317,16 @@ export function WorkflowBuilder({
         name: name.trim(),
         description: workflow.description || null,
         is_active: isActive,
-        rules,
-        nodes: rules.map((r, i) => ({
+        rules: sanitizedRules,
+        nodes: sanitizedRules.map((r, i) => ({
           node_type: i === 0 ? "start" : "branch_retry",
           outcome_condition: r.variables[0] || "others",
           agent_id: r.agent_id,
           agent_label: r.agent_name,
-          max_attempts: r.action.startsWith("call") ? r.retries : 1,
+          max_attempts: r.action === "call_again" ? r.retries : 1,
           delay_minutes: r.delay_minutes || 60,
           action_description: `Matches: ${r.variables.join(", ")}`,
+          is_terminal: r.action === "stop_calling",
         })),
       });
 
@@ -625,7 +653,7 @@ export function WorkflowBuilder({
                               <Button
                                 variant="outline"
                                 size="sm"
-                                className="h-9 px-2.5 gap-2 text-xs font-medium bg-background border-border/80 w-full max-w-[170px] justify-between"
+                                className="h-9 px-2.5 gap-2 text-xs font-medium bg-background border-border/80 w-full max-w-[185px] justify-between shadow-2xs"
                               />
                             }
                           >
@@ -644,21 +672,59 @@ export function WorkflowBuilder({
                                   </span>
                                 </>
                               ) : (
-                                <span className="text-muted-foreground">
-                                  Select Agent
-                                </span>
+                                <>
+                                  <span className="size-5 rounded-full flex items-center justify-center text-[10px] font-semibold bg-muted text-muted-foreground border border-border/60">
+                                    ⚡
+                                  </span>
+                                  <span className="text-muted-foreground truncate">
+                                    Campaign Default
+                                  </span>
+                                </>
                               )}
                             </div>
                             <ChevronDownIcon className="size-3.5 text-muted-foreground opacity-70 shrink-0" />
                           </DropdownMenuTrigger>
-                          <DropdownMenuContent align="start" className="w-56 p-1">
-                            <div className="px-2 py-1 text-[10px] font-semibold text-muted-foreground uppercase">
+                          <DropdownMenuContent align="start" className="w-64 p-1">
+                            <div className="px-2 py-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+                              Voice Agent Selection
+                            </div>
+
+                            {/* Option 1: Campaign Default */}
+                            <DropdownMenuItem
+                              onClick={() =>
+                                updateRule(rule.id, {
+                                  agent_id: null,
+                                  agent_name: null,
+                                })
+                              }
+                              className="flex items-center gap-2.5 p-2 cursor-pointer"
+                            >
+                              <span className="size-5 rounded-full flex items-center justify-center text-[10px] font-bold bg-muted text-foreground border border-border shrink-0">
+                                ⚡
+                              </span>
+                              <div className="flex flex-col truncate">
+                                <span className="text-xs font-medium truncate">
+                                  Campaign Default Agent
+                                </span>
+                                <span className="text-[10px] text-muted-foreground">
+                                  Uses primary voice agent
+                                </span>
+                              </div>
+                              {!rule.agent_id && (
+                                <CheckIcon className="size-3.5 ml-auto text-emerald-600 shrink-0" />
+                              )}
+                            </DropdownMenuItem>
+
+                            <DropdownMenuSeparator />
+
+                            <div className="px-2 py-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
                               Workspace Agents ({availableAgents.length})
                             </div>
+
                             {availableAgents.length === 0 ? (
                               <div className="p-3 text-center space-y-1.5">
                                 <p className="text-xs text-muted-foreground">
-                                  No voice agents linked to this workspace.
+                                  No additional voice agents linked.
                                 </p>
                                 <Button
                                   variant="outline"
@@ -683,7 +749,7 @@ export function WorkflowBuilder({
                                     className="flex items-center gap-2 p-2 cursor-pointer"
                                   >
                                     <span
-                                      className={`size-5 rounded-full flex items-center justify-center text-[10px] font-bold ${agent.color}`}
+                                      className={`size-5 rounded-full flex items-center justify-center text-[10px] font-bold ${agent.color} shrink-0`}
                                     >
                                       {agent.name[0].toUpperCase()}
                                     </span>
@@ -696,7 +762,7 @@ export function WorkflowBuilder({
                                       </span>
                                     </div>
                                     {rule.agent_id === agent.id && (
-                                      <CheckIcon className="size-3.5 ml-auto text-foreground shrink-0" />
+                                      <CheckIcon className="size-3.5 ml-auto text-emerald-600 shrink-0" />
                                     )}
                                   </DropdownMenuItem>
                                 ))}
@@ -787,58 +853,169 @@ export function WorkflowBuilder({
 
       {/* JSON Viewer Dialog */}
       <Dialog open={jsonOpen} onOpenChange={setJsonOpen}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <BotIcon className="size-4 text-emerald-500" />
-              Workflow Configuration JSON
-            </DialogTitle>
-            <DialogDescription>
-              Exportable multi-agent decision matrix and automated retry logic.
-            </DialogDescription>
-          </DialogHeader>
+        <DialogContent className="w-[95vw] max-w-4xl sm:max-w-4xl md:max-w-4xl lg:max-w-4xl p-0 gap-0 overflow-hidden bg-background border-border shadow-2xl rounded-2xl">
+          <div className="p-6 border-b border-border/80 bg-muted/20">
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-1">
+                <DialogTitle className="flex items-center gap-2.5 text-base font-semibold">
+                  <div className="size-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-600 dark:text-emerald-400">
+                    <Code2Icon className="size-4.5" />
+                  </div>
+                  <span>Workflow Configuration JSON</span>
+                </DialogTitle>
+                <DialogDescription className="text-xs text-muted-foreground">
+                  Complete decision matrix, outcome variables, and multi-agent routing schema.
+                </DialogDescription>
+              </div>
 
-          <div className="relative mt-2">
-            <pre className="p-4 rounded-xl bg-muted/60 border border-border/80 text-xs font-mono overflow-auto max-h-[360px] text-foreground">
-              {JSON.stringify(
-                {
-                  workflow_id: workflow.id,
-                  name,
-                  is_active: isActive,
-                  total_rules: rules.length,
-                  rules: rules.map((r) => ({
-                    variables: r.variables,
-                    action: r.action,
-                    retries: r.action.startsWith("call") ? r.retries : 0,
-                    agent_id: r.agent_id,
-                    agent_name: r.agent_name,
-                  })),
-                },
-                null,
-                2,
-              )}
-            </pre>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                navigator.clipboard.writeText(
-                  JSON.stringify({ name, is_active: isActive, rules }, null, 2),
-                );
-                toast.success("JSON copied to clipboard");
-              }}
-              className="absolute right-3 top-3 h-7 text-xs gap-1.5 bg-background shadow-xs"
-            >
-              <CopyIcon className="size-3" />
-              Copy
-            </Button>
+              <div className="flex items-center gap-2">
+                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium border ${isActive ? "bg-emerald-500/10 text-emerald-600 border-emerald-500/20" : "bg-muted text-muted-foreground border-border"}`}>
+                  <span className={`size-1.5 rounded-full mr-1.5 ${isActive ? "bg-emerald-500" : "bg-muted-foreground"}`} />
+                  {isActive ? "Active" : "Inactive"}
+                </span>
+                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-mono font-medium bg-muted text-foreground border border-border">
+                  {rules.length} {rules.length === 1 ? "rule" : "rules"}
+                </span>
+              </div>
+            </div>
           </div>
 
-          <DialogFooter className="mt-4">
-            <Button variant="outline" onClick={() => setJsonOpen(false)}>
-              Close
-            </Button>
-          </DialogFooter>
+          {(() => {
+            const formattedJsonObj = {
+              name,
+              is_active: isActive,
+              total_rules: rules.length,
+              rules: rules.map((r, idx) => ({
+                id: r.id || `rule_${idx + 1}`,
+                action: r.action,
+                retries: r.action === "stop_calling" ? 0 : (r.retries ?? 0),
+                ...(r.action !== "stop_calling" && r.delay_minutes ? { delay_minutes: r.delay_minutes } : {}),
+                agent_id: r.action === "stop_calling" ? null : (r.agent_id || null),
+                agent_name: r.action === "stop_calling" ? null : (r.agent_name || null),
+                variables: r.variables,
+              })),
+            };
+            const jsonText = JSON.stringify(formattedJsonObj, null, 2);
+            const lines = jsonText.split("\n");
+            const byteSize = new Blob([jsonText]).size;
+
+            function highlightSyntax(raw: string) {
+              const regex = /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g;
+              return raw.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(regex, (match) => {
+                let cls = "text-amber-400"; // number
+                if (/^"/.test(match)) {
+                  if (/:$/.test(match)) {
+                    cls = "text-sky-300 font-semibold"; // key
+                  } else {
+                    cls = "text-emerald-300"; // string value
+                  }
+                } else if (/true|false/.test(match)) {
+                  cls = "text-purple-300 font-medium"; // boolean
+                } else if (/null/.test(match)) {
+                  cls = "text-rose-300/80 italic"; // null
+                }
+                return `<span class="${cls}">${match}</span>`;
+              });
+            }
+
+            function handleDownload() {
+              const filename = `${name.toLowerCase().replace(/[^a-z0-9]/g, "_") || "workflow"}_config.json`;
+              const blob = new Blob([jsonText], { type: "application/json" });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = filename;
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+              URL.revokeObjectURL(url);
+              toast.success(`Downloaded ${filename}`);
+            }
+
+            return (
+              <div className="p-6 space-y-4">
+                {/* Code Window Container */}
+                <div className="rounded-xl border border-neutral-800 bg-[#0d1117] text-neutral-100 shadow-xl overflow-hidden">
+                  {/* Window Bar */}
+                  <div className="flex items-center justify-between px-4 py-2.5 bg-[#161b22] border-b border-neutral-800/90 text-xs">
+                    <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-1.5">
+                        <div className="size-2.5 rounded-full bg-rose-500/80" />
+                        <div className="size-2.5 rounded-full bg-amber-500/80" />
+                        <div className="size-2.5 rounded-full bg-emerald-500/80" />
+                      </div>
+                      <span className="text-neutral-400 font-mono text-[11px] ml-2 flex items-center gap-1.5">
+                        <Code2Icon className="size-3 text-neutral-500" />
+                        workflow_config.json
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-3 text-neutral-400 font-mono text-[11px]">
+                      <span>{lines.length} lines</span>
+                      <span>•</span>
+                      <span>{(byteSize / 1024).toFixed(1)} KB</span>
+                    </div>
+                  </div>
+
+                  {/* Code Editor Body with Line Numbers */}
+                  <div className="p-4 font-mono text-xs overflow-auto max-h-[460px] leading-relaxed select-text">
+                    <table className="w-full border-collapse">
+                      <tbody>
+                        {lines.map((line, idx) => (
+                          <tr key={idx} className="hover:bg-white/[0.03] transition-colors">
+                            <td className="w-10 pr-4 text-right select-none text-neutral-600 font-mono text-[11px] align-top">
+                              {idx + 1}
+                            </td>
+                            <td className="text-neutral-100 font-mono text-xs whitespace-pre align-top">
+                              <span
+                                dangerouslySetInnerHTML={{
+                                  __html: highlightSyntax(line),
+                                }}
+                              />
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Footer Controls */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
+                  <p className="text-[11px] text-muted-foreground">
+                    This payload contains all live variables, multi-agent routing rules, and retry policies.
+                  </p>
+
+                  <div className="flex items-center gap-2 self-end sm:self-auto">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={handleDownload}
+                      className="h-8 text-xs gap-1.5 shadow-xs"
+                    >
+                      <DownloadIcon className="size-3.5 text-muted-foreground" />
+                      Download JSON
+                    </Button>
+
+                    <Button
+                      type="button"
+                      variant="default"
+                      size="sm"
+                      onClick={() => {
+                        navigator.clipboard.writeText(jsonText);
+                        toast.success("JSON copied to clipboard");
+                      }}
+                      className="h-8 text-xs gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs"
+                    >
+                      <CopyIcon className="size-3.5" />
+                      Copy JSON
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
         </DialogContent>
       </Dialog>
 
