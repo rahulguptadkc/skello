@@ -159,11 +159,13 @@ export interface DueContact {
   id: string;
   campaign_id: string;
   organisation_id: string;
+  lead_id?: string | null;
   phone: string;
   name: string | null;
   metadata: Record<string, unknown>;
   attempt: number;
   connected_count?: number;
+  next_attempt_at?: string | null;
   // Honored callbacks grant extra dial allowance on top of max_attempts.
   callback_count: number;
   // All-resting deferrals so far (drives backoff → least-bad fallback).
@@ -174,6 +176,7 @@ export interface DueContact {
     status: string;
     max_attempts: number;
     max_connected_attempts?: number;
+    workflow_id?: string | null;
     agent_id: string | null;
     from_phone_number: string | null;
     from_phone_numbers: string[] | null;
@@ -376,7 +379,7 @@ export async function dispatchDueCampaignContacts(): Promise<DispatchResult> {
   let { data, error } = await admin
     .from("campaign_contacts")
     .select(
-      "id, campaign_id, organisation_id, phone, name, metadata, attempt, connected_count, callback_count, health_defer_count, campaign:campaigns!campaign_id(id, organisation_id, status, max_attempts, max_connected_attempts, agent_id, from_phone_number, from_phone_numbers, switch_connect_rate_floor, switch_window_minutes, switch_min_samples, calling_window_start_minute, calling_window_end_minute, calling_window_days, calling_window_timezone)",
+      "id, campaign_id, organisation_id, lead_id, phone, name, metadata, attempt, connected_count, next_attempt_at, callback_count, health_defer_count, campaign:campaigns!campaign_id(id, organisation_id, status, max_attempts, max_connected_attempts, workflow_id, agent_id, from_phone_number, from_phone_numbers, switch_connect_rate_floor, switch_window_minutes, switch_min_samples, calling_window_start_minute, calling_window_end_minute, calling_window_days, calling_window_timezone)",
     )
     .eq("status", "pending")
     .lte("next_attempt_at", nowIso)
@@ -388,12 +391,13 @@ export async function dispatchDueCampaignContacts(): Promise<DispatchResult> {
     error &&
     (error.message.includes("connected_count") ||
       error.message.includes("max_connected_attempts") ||
+      error.message.includes("workflow_id") ||
       error.message.includes("does not exist"))
   ) {
     const fallbackRes = await admin
       .from("campaign_contacts")
       .select(
-        "id, campaign_id, organisation_id, phone, name, metadata, attempt, callback_count, health_defer_count, campaign:campaigns!campaign_id(id, organisation_id, status, max_attempts, agent_id, from_phone_number, from_phone_numbers, switch_connect_rate_floor, switch_window_minutes, switch_min_samples, calling_window_start_minute, calling_window_end_minute, calling_window_days, calling_window_timezone)",
+        "id, campaign_id, organisation_id, lead_id, phone, name, metadata, attempt, next_attempt_at, callback_count, health_defer_count, campaign:campaigns!campaign_id(id, organisation_id, status, max_attempts, agent_id, from_phone_number, from_phone_numbers, switch_connect_rate_floor, switch_window_minutes, switch_min_samples, calling_window_start_minute, calling_window_end_minute, calling_window_days, calling_window_timezone)",
       )
       .eq("status", "pending")
       .lte("next_attempt_at", nowIso)
@@ -414,10 +418,21 @@ export async function dispatchDueCampaignContacts(): Promise<DispatchResult> {
   const queue: DueContact[] = [];
   for (const c of data ?? []) {
     if (!c.campaign || c.campaign.status !== "in_progress") continue;
-    // Dial allowance = technical retries (max_attempts) + one per honored
-    // callback. A customer-requested callback never gets starved by no-answers.
-    if (c.attempt >= c.campaign.max_attempts + c.callback_count) continue;
-    if ((c.connected_count ?? 0) >= (c.campaign.max_connected_attempts ?? 1)) continue;
+    // For workflow-driven campaigns or scheduled retries, allow workflow-scheduled retries.
+    const hasActiveNextAttempt = !!c.next_attempt_at;
+    const maxAllowedAttempts =
+      c.campaign.workflow_id || hasActiveNextAttempt
+        ? Math.max(c.campaign.max_attempts, 10) + c.callback_count
+        : c.campaign.max_attempts + c.callback_count;
+
+    if (c.attempt >= maxAllowedAttempts) continue;
+
+    const maxConnected =
+      c.campaign.workflow_id || hasActiveNextAttempt
+        ? Math.max(c.campaign.max_attempts, c.campaign.max_connected_attempts ?? 1, 10)
+        : (c.campaign.max_connected_attempts ?? 1);
+
+    if ((c.connected_count ?? 0) >= maxConnected) continue;
     const used = perCampaign.get(c.campaign_id) ?? 0;
     if (used >= PER_CAMPAIGN_LIMIT) continue;
     perCampaign.set(c.campaign_id, used + 1);
@@ -569,10 +584,17 @@ export async function dispatchDueCampaignContacts(): Promise<DispatchResult> {
         return { id: contact.id, ok: false, reason: "no_integration" };
       }
 
-      // Per-campaign overrides win; null fields fall back to the org default
-      // stored on bolna_integrations.
+      // Agent resolution priority:
+      // 1. Per-contact retry agent chosen by a matched workflow rule (stored in metadata.retry_agent_id)
+      // 2. Per-campaign voice agent override
+      // 3. Organisation default voice agent
+      const retryAgentId =
+        (contact.metadata as Record<string, unknown> | null)?.retry_agent_id as string | undefined;
+
       const resolvedAgentId =
-        contact.campaign?.agent_id ?? integration.agent_id;
+        retryAgentId ||
+        contact.campaign?.agent_id ||
+        integration.agent_id;
 
       // Choose the caller-ID by connect-rate health. Done BEFORE the CAS claim
       // so a contact that must be deferred (all numbers resting) doesn't burn
@@ -636,6 +658,7 @@ export async function dispatchDueCampaignContacts(): Promise<DispatchResult> {
       // number; a least-bad (degraded) dial leaves it high so we stay in
       // least-bad mode until a number actually recovers.
       const resetHealthDefer = !pick.degraded && contact.health_defer_count > 0;
+      const contactName = contact.name || null;
 
       try {
         const result = await initiateBolnaCall({
@@ -647,7 +670,14 @@ export async function dispatchDueCampaignContacts(): Promise<DispatchResult> {
             organisation_id: contact.organisation_id,
             campaign_id: contact.campaign_id,
             campaign_contact_id: contact.id,
-            contact_name: contact.name,
+            name: contactName,
+            customer_name: contactName,
+            first_name: contactName,
+            first_name_hindi: contactName,
+            contact_name: contactName,
+            recipient_name: contactName,
+            phone: contact.phone,
+            user_number: contact.phone,
             ...contact.metadata,
           },
         });
@@ -657,12 +687,22 @@ export async function dispatchDueCampaignContacts(): Promise<DispatchResult> {
           .insert({
             organisation_id: contact.organisation_id,
             campaign_contact_id: contact.id,
+            lead_id: contact.lead_id ?? null,
             bolna_call_id: result.bolnaCallId,
             direction: "outbound",
             to_phone: contact.phone,
             from_phone: fromPhoneForDial,
             agent_id: resolvedAgentId,
             status: "initiated",
+            lead_data: {
+              customer_name: contactName,
+              name: contactName,
+              first_name: contactName,
+              first_name_hindi: contactName,
+              phone: contact.phone,
+              user_number: contact.phone,
+              ...(contact.metadata || {}),
+            },
           })
           .select("id")
           .single<{ id: string }>();
@@ -690,6 +730,18 @@ export async function dispatchDueCampaignContacts(): Promise<DispatchResult> {
           })
           .eq("id", contact.id);
 
+        console.log(
+          `\n============================================================\n` +
+            `[CAMPAIGN CALL DISPATCHED]\n` +
+            `  Contact: ${contact.name || "Unknown"} (${contact.phone}) [ID: ${contact.id}]\n` +
+            `  Campaign: ${contact.campaign?.id ?? contact.campaign_id}\n` +
+            `  Attempt: ${contact.attempt + 1}\n` +
+            `  Call ID: ${callRow.id} (Bolna ID: ${result.bolnaCallId})\n` +
+            `  Agent ID: ${resolvedAgentId}\n` +
+            `  Caller ID: ${fromPhoneForDial || "default provider pool"}\n` +
+            `============================================================\n`,
+        );
+
         return { id: contact.id, ok: true };
       } catch (err) {
         const reason =
@@ -703,12 +755,22 @@ export async function dispatchDueCampaignContacts(): Promise<DispatchResult> {
         await admin.from("calls").insert({
           organisation_id: contact.organisation_id,
           campaign_contact_id: contact.id,
+          lead_id: contact.lead_id ?? null,
           to_phone: contact.phone,
           from_phone: fromPhoneForDial,
           agent_id: resolvedAgentId,
           status: "failed",
           direction: "outbound",
           error_message: reason.slice(0, 500),
+          lead_data: {
+            customer_name: contactName,
+            name: contactName,
+            first_name: contactName,
+            first_name_hindi: contactName,
+            phone: contact.phone,
+            user_number: contact.phone,
+            ...(contact.metadata || {}),
+          },
         });
 
         const newAttempt = contact.attempt + 1;

@@ -27,6 +27,7 @@ import type {
   CampaignStatus,
 } from "@/types/campaign";
 import { FALLBACK_OUTCOME_KEY } from "@/types/outcome-policy";
+import { formatDateTimeShort } from "@/lib/format";
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
@@ -163,18 +164,36 @@ export async function createCampaign(
   const scheduledAt = isRunNow ? null : parsed.data.scheduled_at!;
 
   let workflowName: string | null = parsed.data.workflow_name ?? null;
-  if (parsed.data.workflow_id && !workflowName) {
+  let maxWfRetries = 0;
+  if (parsed.data.workflow_id) {
     try {
       const { data: wf } = await admin
         .from("workflows")
-        .select("name")
+        .select("name, rules")
         .eq("id", parsed.data.workflow_id)
-        .maybeSingle<{ name: string }>();
-      if (wf?.name) workflowName = wf.name;
+        .maybeSingle<{ name: string; rules: Array<{ action?: string; retries?: number }> }>();
+      if (wf?.name && !workflowName) workflowName = wf.name;
+      if (wf?.rules && Array.isArray(wf.rules)) {
+        maxWfRetries = Math.max(
+          0,
+          ...wf.rules
+            .filter((r) => r.action === "call_again")
+            .map((r) => Number(r.retries) || 0),
+        );
+      }
     } catch {
       // ignore
     }
   }
+
+  const effectiveMaxAttempts = Math.max(
+    parsed.data.max_attempts,
+    maxWfRetries > 0 ? maxWfRetries + 1 : 1,
+  );
+  const effectiveMaxConnectedAttempts = Math.max(
+    parsed.data.max_connected_attempts ?? 1,
+    maxWfRetries > 0 ? maxWfRetries + 1 : 1,
+  );
 
   const insertPayload = {
     organisation_id: parsed.data.organisation_id,
@@ -189,8 +208,8 @@ export async function createCampaign(
     status: isRunNow ? "in_progress" : "scheduled",
     scheduled_at: scheduledAt,
     started_at: isRunNow ? new Date().toISOString() : null,
-    max_attempts: parsed.data.max_attempts,
-    max_connected_attempts: parsed.data.max_connected_attempts,
+    max_attempts: effectiveMaxAttempts,
+    max_connected_attempts: effectiveMaxConnectedAttempts,
     retry_interval_seconds: parsed.data.retry_interval_seconds,
     retry_on: parsed.data.retry_on,
     switch_connect_rate_floor: parsed.data.switch_connect_rate_floor,
@@ -314,14 +333,40 @@ export async function runCampaignNow(
 
   const now = new Date().toISOString();
 
-  // Re-arm pending contacts so the cron tick (or an immediate manual tick)
-  // picks them up. We don't touch contacts that are already terminal.
-  const { error: armErr } = await admin
+  // Check if there are any pending contacts. If all contacts finished previously,
+  // reset them to pending so clicking "Run now" re-dials the campaign cleanly.
+  const { count: pendingCount } = await admin
     .from("campaign_contacts")
-    .update({ next_attempt_at: now })
+    .select("id", { count: "exact", head: true })
     .eq("campaign_id", existing.id)
     .eq("status", "pending");
-  if (armErr) return fail(armErr.message);
+
+  if (!pendingCount || pendingCount === 0) {
+    const { error: resetErr } = await admin
+      .from("campaign_contacts")
+      .update({
+        status: "pending",
+        attempt: 0,
+        connected_count: 0,
+        callback_count: 0,
+        health_defer_count: 0,
+        next_attempt_at: now,
+        last_error: null,
+        last_outcome: null,
+        last_status: null,
+      })
+      .eq("campaign_id", existing.id);
+    if (resetErr) return fail(resetErr.message);
+  } else {
+    // Re-arm pending contacts so the cron tick (or an immediate manual tick)
+    // picks them up. We don't touch contacts that are already terminal.
+    const { error: armErr } = await admin
+      .from("campaign_contacts")
+      .update({ next_attempt_at: now })
+      .eq("campaign_id", existing.id)
+      .eq("status", "pending");
+    if (armErr) return fail(armErr.message);
+  }
 
   let campaignData: Campaign | null = null;
   const updateRes = await admin
@@ -896,6 +941,11 @@ export interface ContactRow {
   // Compact "in 24m" / "in 2h" / "in 6d" label, computed at fetch time so the
   // render stays pure. Null unless the contact is waiting for a next dial.
   nextAttemptLabel: string | null;
+  nextAttemptFormatted: string | null;
+  willRetry: boolean;
+  isRetry: boolean;
+  retryAgentId: string | null;
+  retryAgentName: string | null;
 }
 
 // Compact, timezone-agnostic "how long until" label.
@@ -972,6 +1022,12 @@ function deriveContactState(c: {
     return { state: "callback", detail: "Customer-requested callback" };
   }
   if (c.attempt > 0) {
+    if (c.last_outcome) {
+      return {
+        state: "retry",
+        detail: `Workflow retry (${c.last_outcome})`,
+      };
+    }
     return {
       state: "retry",
       detail: c.last_status ? `Retrying after ${c.last_status}` : "Retrying",
@@ -1004,12 +1060,13 @@ export async function getCampaignStats(
   const { data: campaign } = await admin
     .from("campaigns")
     .select(
-      "id, organisation_id, max_attempts, switch_connect_rate_floor, switch_window_minutes, switch_min_samples",
+      "id, organisation_id, agent_id, max_attempts, switch_connect_rate_floor, switch_window_minutes, switch_min_samples",
     )
     .eq("id", parsed.data.id)
     .maybeSingle<{
       id: string;
       organisation_id: string;
+      agent_id: string | null;
       max_attempts: number;
       switch_connect_rate_floor: number;
       switch_window_minutes: number;
@@ -1020,15 +1077,31 @@ export async function getCampaignStats(
     return fail("Forbidden");
   }
 
-  // Caller-ID labels for the per-number breakdown.
-  const { data: integration } = await admin
-    .from("bolna_integrations")
-    .select("from_phone_labels")
-    .eq("organisation_id", campaign.organisation_id)
-    .maybeSingle<{
-      from_phone_labels: Record<string, unknown> | null;
-    }>();
+  // Caller-ID labels and voice agent labels.
+  const [{ data: integration }, { data: voiceAgents }] = await Promise.all([
+    admin
+      .from("bolna_integrations")
+      .select("agent_id, from_phone_labels")
+      .eq("organisation_id", campaign.organisation_id)
+      .maybeSingle<{
+        agent_id: string;
+        from_phone_labels: Record<string, unknown> | null;
+      }>(),
+    admin
+      .from("voice_agents")
+      .select("agent_id, label")
+      .eq("organisation_id", campaign.organisation_id),
+  ]);
+
   const numberLabels = integration?.from_phone_labels ?? {};
+  const agentNameMap = new Map<string, string>(
+    (voiceAgents ?? []).map((a) => [a.agent_id, a.label]),
+  );
+  const defaultAgentId = campaign.agent_id || integration?.agent_id || null;
+  const defaultAgentLabel = defaultAgentId
+    ? agentNameMap.get(defaultAgentId) || defaultAgentId
+    : null;
+
   const switchFloorPct = campaign.switch_connect_rate_floor;
   const switchWindowMinutes = campaign.switch_window_minutes;
   const switchMinSamples = campaign.switch_min_samples;
@@ -1057,7 +1130,7 @@ export async function getCampaignStats(
   const { data: contacts, error: cErr } = await admin
     .from("campaign_contacts")
     .select(
-      "id, name, phone, status, attempt, last_status, last_outcome, last_error, next_attempt_at, health_defer_count, callback_count",
+      "id, name, phone, status, attempt, last_status, last_outcome, last_error, next_attempt_at, health_defer_count, callback_count, metadata",
     )
     .eq("campaign_id", campaign.id)
     .returns<
@@ -1073,6 +1146,7 @@ export async function getCampaignStats(
         next_attempt_at: string | null;
         health_defer_count: number;
         callback_count: number;
+        metadata: Record<string, unknown> | null;
       }>
     >();
   if (cErr) return fail(cErr.message);
@@ -1110,8 +1184,17 @@ export async function getCampaignStats(
     else if (c.status === "pending" || c.status === "in_flight")
       pendingContacts += 1;
 
+    const retryAgentId = (c.metadata?.retry_agent_id as string | undefined) ?? null;
+    const effectiveAgentId = retryAgentId || defaultAgentId;
+    const effectiveAgentName = effectiveAgentId
+      ? agentNameMap.get(effectiveAgentId) || (effectiveAgentId === defaultAgentId ? defaultAgentLabel : effectiveAgentId)
+      : null;
+
     const { state, detail } = deriveContactState(c);
     contactStateCounts[state] += 1;
+    const isWaiting = WAITING_STATES.has(state);
+    const willRetry = isWaiting && !!c.next_attempt_at;
+
     allContactRows.push({
       id: c.id,
       name: c.name,
@@ -1121,9 +1204,12 @@ export async function getCampaignStats(
       attempt: c.attempt,
       maxAttempts: campaign.max_attempts,
       nextAttemptAt: c.next_attempt_at,
-      nextAttemptLabel: WAITING_STATES.has(state)
-        ? formatUntil(c.next_attempt_at, nowMs)
-        : null,
+      nextAttemptLabel: isWaiting ? formatUntil(c.next_attempt_at, nowMs) : null,
+      nextAttemptFormatted: isWaiting && c.next_attempt_at ? formatDateTimeShort(c.next_attempt_at) : null,
+      willRetry,
+      isRetry: isWaiting && (c.attempt > 0 || c.health_defer_count > 0 || c.callback_count > 0),
+      retryAgentId: effectiveAgentId,
+      retryAgentName: effectiveAgentName,
     });
   }
   // Most-actionable first (deferred → callback → retry → …), then cap.
@@ -1308,4 +1394,60 @@ export async function listCampaignOutcomeOptions(
   return ok(
     (data ?? []).map((r) => ({ key: r.outcome_key, label: r.label })),
   );
+}
+
+/**
+ * Manually reset and immediately trigger a single campaign contact.
+ */
+export async function retryCampaignContact(
+  input: unknown,
+): Promise<ActionResult<{ success: boolean }>> {
+  const parsed = z.object({ contactId: z.string().uuid() }).safeParse(input);
+  if (!parsed.success) return fail("Invalid contact id");
+
+  const { supabase, user } = await requireUser();
+  if (!user) return fail("Not authenticated");
+
+  const admin = createAdminClient();
+  const { data: contact } = await admin
+    .from("campaign_contacts")
+    .select("id, campaign_id, organisation_id")
+    .eq("id", parsed.data.contactId)
+    .maybeSingle<{ id: string; campaign_id: string; organisation_id: string }>();
+
+  if (!contact) return fail("Contact not found");
+  if (!(await userOwnsOrg(supabase, user.id, contact.organisation_id))) {
+    return fail("Forbidden");
+  }
+
+  const now = new Date().toISOString();
+  await admin
+    .from("campaign_contacts")
+    .update({
+      status: "pending",
+      next_attempt_at: now,
+      last_error: null,
+      last_outcome: null,
+      last_status: null,
+    })
+    .eq("id", contact.id);
+
+  await admin
+    .from("campaigns")
+    .update({
+      status: "in_progress",
+      started_at: now,
+      completed_at: null,
+    })
+    .eq("id", contact.campaign_id);
+
+  after(async () => {
+    try {
+      await dispatchDueCampaignContacts();
+    } catch (err) {
+      console.error("[campaigns] manual contact retry dispatch failed", err);
+    }
+  });
+
+  return ok({ success: true });
 }

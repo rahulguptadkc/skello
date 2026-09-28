@@ -7,6 +7,7 @@ import {
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { CallOutcome, CallStatus } from "@/types/call";
 import type { CampaignRetryTrigger } from "@/types/campaign";
+import { getWorkflowRulesForOrg } from "@/lib/campaigns/workflow-store";
 import {
   FALLBACK_OUTCOME_KEY,
   type OutcomeAction,
@@ -58,6 +59,11 @@ interface ApplyOutcomeInput {
   // (extracted_data) webhook. Omitted on the status-only path — a `completed`
   // call with no disposition falls back to "succeeded".
   callOutcome?: CallOutcome | null;
+  leadIntent?: string | null;
+  interest?: string | null;
+  customerStatus?: string | null;
+  leadData?: Record<string, unknown> | null;
+  customData?: Record<string, Record<string, unknown>> | null;
   requestedCallbackAt?: string | null;
 }
 
@@ -69,6 +75,7 @@ interface ContactRow {
   organisation_id: string;
   phone: string;
   name: string | null;
+  metadata?: Record<string, unknown>;
   attempt: number;
   connected_count?: number;
   callback_count: number;
@@ -103,6 +110,11 @@ export async function applyCampaignContactOutcome({
   callId,
   callStatus,
   callOutcome = null,
+  leadIntent = null,
+  interest = null,
+  customerStatus = null,
+  leadData = null,
+  customData = null,
   requestedCallbackAt = null,
 }: ApplyOutcomeInput): Promise<void> {
   // Cheap guard before the DB read — non-terminal statuses are no-ops.
@@ -113,7 +125,7 @@ export async function applyCampaignContactOutcome({
   let { data: contact, error: contactErr } = await admin
     .from("campaign_contacts")
     .select(
-      "id, campaign_id, organisation_id, phone, name, attempt, connected_count, callback_count, status, lead_id, last_call_id, campaign:campaigns!campaign_id(id, max_attempts, max_connected_attempts, max_callbacks, retry_interval_seconds, retry_on, organisation_id, workflow_id)",
+      "id, campaign_id, organisation_id, phone, name, metadata, attempt, connected_count, callback_count, status, lead_id, last_call_id, campaign:campaigns!campaign_id(id, max_attempts, max_connected_attempts, max_callbacks, retry_interval_seconds, retry_on, organisation_id, workflow_id)",
     )
     .eq("id", contactId)
     .maybeSingle<ContactRow>();
@@ -128,35 +140,60 @@ export async function applyCampaignContactOutcome({
     const fallbackRes = await admin
       .from("campaign_contacts")
       .select(
-        "id, campaign_id, organisation_id, phone, name, attempt, callback_count, status, lead_id, last_call_id, campaign:campaigns!campaign_id(id, max_attempts, max_callbacks, retry_interval_seconds, retry_on, organisation_id)",
+        "id, campaign_id, organisation_id, phone, name, metadata, attempt, callback_count, status, lead_id, last_call_id, campaign:campaigns!campaign_id(id, max_attempts, max_callbacks, retry_interval_seconds, retry_on, organisation_id)",
       )
       .eq("id", contactId)
       .maybeSingle<ContactRow>();
     contact = fallbackRes.data;
   }
 
-  if (!contact || !contact.campaign) return;
+  if (!contact) {
+    console.warn(`[campaigns/outcome] Contact not found: ${contactId}`);
+    return;
+  }
+  if (!contact.campaign) {
+    console.warn(
+      `[campaigns/outcome] Campaign not found for contact ${contactId} (campaign_id: ${contact.campaign_id})`,
+    );
+    return;
+  }
   // Only act on a contact we currently hold the dial claim for. Guards against
   // a duplicate/late webhook re-deciding an already-resolved contact.
-  if (contact.status !== "in_flight") return;
-
-  // Load workflow rules if the campaign has a workflow attached
-  let workflowRules: OutcomeRule[] | null = null;
-  if (contact.campaign.workflow_id) {
-    try {
-      const { data: wf } = await admin
-        .from("workflows")
-        .select("rules")
-        .eq("id", contact.campaign.workflow_id)
-        .maybeSingle<{ rules: OutcomeRule[] }>();
-      if (wf?.rules && Array.isArray(wf.rules)) {
-        workflowRules = wf.rules;
-      }
-    } catch {
-      // Workflows table might not exist yet
-      workflowRules = null;
-    }
+  if (contact.status !== "in_flight") {
+    console.warn(
+      `[campaigns/outcome] Skipped outcome evaluation: contact ${contactId} status is "${contact.status}" (expected "in_flight")`,
+    );
+    return;
   }
+
+  // Load workflow rules for the campaign (with cache and org fallback)
+  const workflowRules = await getWorkflowRulesForOrg(
+    contact.organisation_id,
+    contact.campaign.workflow_id,
+  );
+
+  console.log("[campaigns/outcome] evaluating contact outcome", {
+    contactId: contact.id,
+    contactPhone: contact.phone,
+    contactName: contact.name,
+    currentAttempt: contact.attempt,
+    callStatus,
+    callOutcome,
+    leadIntent,
+    interest,
+    customerStatus,
+    leadData,
+    customData,
+    workflowId: contact.campaign.workflow_id ?? "fallback-to-org",
+    workflowRulesFound: workflowRules?.length ?? 0,
+    rules: workflowRules?.map((r) => ({
+      vars: r.variables,
+      action: r.action,
+      retries: r.retries,
+      agentId: r.agent_id,
+      agentName: r.agent_name,
+    })),
+  });
 
   // The outcome policy only matters for the disposition tier (completed calls);
   // technical statuses (no_answer/busy/…) are decided from retry_on alone, so
@@ -169,11 +206,17 @@ export async function applyCampaignContactOutcome({
   const decision = decideOutcome({
     callStatus,
     callOutcome,
+    leadIntent,
+    interest,
+    customerStatus,
+    leadData,
+    customData,
     requestedCallbackAt,
     callId,
     attempt: contact.attempt,
     connectedCount: contact.connected_count ?? 0,
     callbackCount: contact.callback_count,
+    contactMetadata: contact.metadata,
     campaign: {
       max_attempts: contact.campaign.max_attempts,
       max_connected_attempts: contact.campaign.max_connected_attempts ?? 1,
@@ -186,14 +229,37 @@ export async function applyCampaignContactOutcome({
     now: Date.now(),
   });
 
-  if (decision.kind === "noop") return;
+  if (decision.kind === "noop") {
+    console.log(`[campaigns/outcome] decision for contact ${contact.id}: NOOP`);
+    return;
+  }
 
-  const updatePayload = {
+  const updatePayload: Record<string, unknown> = {
     ...decision.patch,
     ...(callStatus === "completed"
       ? { connected_count: (contact.connected_count ?? 0) + 1 }
       : {}),
   };
+
+  const retryAgentId =
+    updatePayload.metadata && typeof updatePayload.metadata === "object"
+      ? (updatePayload.metadata as Record<string, unknown>).retry_agent_id
+      : null;
+
+  console.log(
+    `\n============================================================\n` +
+      `[POST-CALL OUTCOME DECIDED]\n` +
+      `  Contact: ${contact.name || "Unknown"} (${contact.phone}) [ID: ${contact.id}]\n` +
+      `  Call ID: ${callId}\n` +
+      `  Call Status: ${callStatus}\n` +
+      `  Call Outcome: ${callOutcome ?? "none"}\n` +
+      `  Decision Kind: ${decision.kind.toUpperCase()}\n` +
+      `  New Status: ${String(updatePayload.status ?? "")}\n` +
+      `  Next Attempt At: ${String(updatePayload.next_attempt_at ?? "None (No further retries)")}\n` +
+      `  Retry Agent ID: ${retryAgentId ? String(retryAgentId) : "None"}\n` +
+      `  Last Error: ${String(updatePayload.last_error ?? "None")}\n` +
+      `============================================================\n`,
+  );
 
   if (decision.kind === "succeed") {
     // Lead conversion is the one I/O the decision can't make itself.
@@ -205,20 +271,42 @@ export async function applyCampaignContactOutcome({
         name: contact.name,
       });
     }
-    await admin
+    const { error: updErr } = await admin
       .from("campaign_contacts")
       .update({ ...updatePayload, lead_id: leadId })
       .eq("id", contact.id)
       .eq("status", "in_flight");
+
+    if (updErr) {
+      console.error(
+        `[campaigns/outcome] Failed to update contact ${contact.id} to succeeded:`,
+        updErr,
+      );
+    } else {
+      console.log(
+        `[campaigns/outcome] Contact ${contact.id} finalized as SUCCEEDED (leadId: ${leadId ?? "none"})`,
+      );
+    }
     return;
   }
 
   // fail / rearm — the patch is complete as decided.
-  await admin
+  const { error: updErr } = await admin
     .from("campaign_contacts")
     .update(updatePayload)
     .eq("id", contact.id)
     .eq("status", "in_flight");
+
+  if (updErr) {
+    console.error(
+      `[campaigns/outcome] Failed to update contact ${contact.id}:`,
+      updErr,
+    );
+  } else {
+    console.log(
+      `[campaigns/outcome] Contact ${contact.id} updated successfully: status=${updatePayload.status}, next_attempt_at=${updatePayload.next_attempt_at ?? "none"}`,
+    );
+  }
 }
 
 /**
@@ -246,15 +334,24 @@ async function convertContactToLead({
 
   const { data: existing } = await admin
     .from("leads")
-    .select("id")
+    .select("id, name")
     .eq("org_slug", org.slug)
     .eq("phone", phone)
-    .maybeSingle<{ id: string }>();
-  if (existing) return existing.id;
+    .maybeSingle<{ id: string; name: string | null }>();
+  if (existing) {
+    if (!existing.name && name) {
+      await admin
+        .from("leads")
+        .update({ name })
+        .eq("id", existing.id);
+    }
+    return existing.id;
+  }
 
   const { data: created, error } = await admin
     .from("leads")
     .insert({
+      organisation_id: organisationId,
       org_slug: org.slug,
       name: name,
       phone,

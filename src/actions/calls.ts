@@ -453,6 +453,105 @@ export async function listConversations(
   if (error) return fail(error.message);
 
   const rows = data ?? [];
+
+  // 1. Enrich missing lead names from campaign_contacts
+  const missingContactIds = rows
+    .filter((r) => (!r.lead || !r.lead.name) && r.campaign_contact_id)
+    .map((r) => r.campaign_contact_id as string);
+
+  if (missingContactIds.length > 0) {
+    const uniqueIds = Array.from(new Set(missingContactIds));
+    const { data: contacts } = await supabase
+      .from("campaign_contacts")
+      .select("id, name, phone")
+      .in("id", uniqueIds);
+
+    if (contacts && contacts.length > 0) {
+      const contactMap = new Map(contacts.map((c) => [c.id, c]));
+      for (const row of rows) {
+        if (row.campaign_contact_id && (!row.lead || !row.lead.name)) {
+          const c = contactMap.get(row.campaign_contact_id);
+          if (c && c.name) {
+            if (!row.lead) {
+              row.lead = {
+                name: c.name,
+                phone: c.phone || row.to_phone || null,
+                status: null,
+                current_intent: null,
+              };
+            } else {
+              row.lead.name = c.name;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // 2. Fallback to leads by phone if still missing
+  const missingPhoneCalls = rows.filter(
+    (r) => (!r.lead || !r.lead.name) && (r.to_phone || r.from_phone),
+  );
+  if (missingPhoneCalls.length > 0) {
+    const phones = Array.from(
+      new Set(
+        missingPhoneCalls
+          .map((r) => (r.direction === "inbound" ? r.from_phone : r.to_phone))
+          .filter((p): p is string => Boolean(p)),
+      ),
+    );
+    if (phones.length > 0) {
+      const { data: leads } = await supabase
+        .from("leads")
+        .select("name, phone, status, current_intent")
+        .in("phone", phones);
+      if (leads && leads.length > 0) {
+        const leadMap = new Map(leads.map((l) => [l.phone, l]));
+        for (const row of rows) {
+          const p = row.direction === "inbound" ? row.from_phone : row.to_phone;
+          if (p && (!row.lead || !row.lead.name)) {
+            const l = leadMap.get(p);
+            if (l && l.name) {
+              if (!row.lead) {
+                row.lead = {
+                  name: l.name,
+                  phone: l.phone || p,
+                  status: l.status || null,
+                  current_intent: l.current_intent || null,
+                };
+              } else {
+                row.lead.name = l.name;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // 3. Fallback to lead_data / name_extracted
+  for (const row of rows) {
+    const fallbackName =
+      ((row.lead_data as Record<string, unknown> | null)?.customer_name as string) ||
+      ((row.lead_data as Record<string, unknown> | null)?.name as string) ||
+      ((row.lead_data as Record<string, unknown> | null)?.first_name as string) ||
+      row.name_extracted ||
+      null;
+
+    if (fallbackName && (!row.lead || !row.lead.name)) {
+      if (!row.lead) {
+        row.lead = {
+          name: fallbackName,
+          phone: row.to_phone || row.from_phone || null,
+          status: null,
+          current_intent: null,
+        };
+      } else {
+        row.lead.name = fallbackName;
+      }
+    }
+  }
+
   // Best-disposition enrichment only makes sense within a campaign (it groups
   // a contact's attempts); skip the extra round-trips elsewhere.
   const items = parsed.data.campaign_id

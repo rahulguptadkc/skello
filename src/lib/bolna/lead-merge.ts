@@ -4,7 +4,7 @@ import type {
   BolnaField,
   BolnaLeadPayload,
 } from "@/lib/bolna/extract";
-import { extractLead, pickValue } from "@/lib/bolna/extract";
+import { extractLead, extractLeadFromExtractedData, pickValue } from "@/lib/bolna/extract";
 import { warnSkelo } from "@/lib/errors";
 // The channel-neutral half of ingest. Extracted so Google Ads / portal / CTWA
 // intake extends this logic instead of growing a second copy of it.
@@ -101,6 +101,7 @@ interface MergeArgs {
   phoneRaw: string | null;
   payload: BolnaLeadPayload;
   source: "inbound_call" | "manual";
+  knownName?: string | null;
 }
 
 // Builds the per-call snapshot blobs from the provider's raw extracted_data.
@@ -135,20 +136,33 @@ function buildSnapshot(
   if (!extractedData) return emptySnapshot;
 
   const leadData = extractedData.lead_data ?? {};
-  const extracted = extractLead(leadData);
+  const extracted = extractLeadFromExtractedData(extractedData);
   const leadDataBlob: Record<string, unknown> = {};
   const customDataBlob: Record<string, Record<string, unknown>> = {};
+
+  const normFirstClass = new Map<string, string>();
+  for (const k of FIRST_CLASS_LEAD_DATA_KEYS) {
+    normFirstClass.set(k.toLowerCase().replace(/[^a-z0-9]/g, ""), k);
+  }
 
   // lead_data category — split into first-class columns + uncategorised bag.
   for (const [key, field] of Object.entries(leadData)) {
     const value = pickValue(field);
     if (value === null) continue;
-    if (FIRST_CLASS_LEAD_DATA_KEYS.has(key)) {
-      leadDataBlob[key] = value;
+    const norm = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const canonicalKey = normFirstClass.get(norm);
+    if (canonicalKey) {
+      leadDataBlob[canonicalKey] = value;
     } else {
       (customDataBlob[""] ??= {})[key] = value;
     }
   }
+
+  // Ensure first-class fields discovered from any category are also available in lead_data
+  if (extracted.interest && !leadDataBlob.interest) leadDataBlob.interest = extracted.interest;
+  if (extracted.call_outcome && !leadDataBlob.call_outcome) leadDataBlob.call_outcome = extracted.call_outcome;
+  if (extracted.customer_status && !leadDataBlob.customer_status) leadDataBlob.customer_status = extracted.customer_status;
+  if (extracted.lead_intent && !leadDataBlob.lead_intent) leadDataBlob.lead_intent = extracted.lead_intent;
 
   // Every other category — dump verbatim into custom_data[<category>].
   // Defensive: only process entries that look like a BolnaField record so a
@@ -190,6 +204,7 @@ async function mergeOntoLead(args: {
   organisationId: string;
   leadId: string;
   snapshot: MergeResult["callSnapshot"];
+  knownName?: string | null;
 }): Promise<void> {
   const admin = createAdminClient();
   const locked = await getLockedFields(args.leadId);
@@ -203,6 +218,18 @@ async function mergeOntoLead(args: {
     !locked.has("name")
   ) {
     colPatch.name = args.snapshot.name_extracted;
+  } else if (
+    args.knownName &&
+    !locked.has("name")
+  ) {
+    const { data: currentLead } = await admin
+      .from("leads")
+      .select("name")
+      .eq("id", args.leadId)
+      .maybeSingle<{ name: string | null }>();
+    if (!currentLead?.name) {
+      colPatch.name = args.knownName;
+    }
   }
   if (
     args.snapshot.lead_intent_extracted &&
@@ -258,6 +285,7 @@ export async function mergePayloadIntoLead(
     organisationId: args.organisationId,
     phoneRaw: args.phoneRaw,
     source: args.source,
+    seed: args.knownName ? { name: args.knownName } : undefined,
   });
   const snapshot = buildSnapshot(args.payload.extracted_data);
 
@@ -267,6 +295,7 @@ export async function mergePayloadIntoLead(
       organisationId: args.organisationId,
       leadId,
       snapshot,
+      knownName: args.knownName,
     }),
     registerDiscoveredFields(args.organisationId, {
       lead_data: snapshot.lead_data,

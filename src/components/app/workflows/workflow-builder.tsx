@@ -62,10 +62,12 @@ const COMMON_VARIABLES = [
   "interested",
   "not_interested",
   "callback_requested",
+  "voicemail",
   "no_conversation",
+  "no_contact",
+  "meeting_booked",
   "no_answer",
   "busy",
-  "voicemail",
   "wrong_number",
   "dnd",
   "call_dropped",
@@ -81,12 +83,12 @@ const ACTION_DESCRIPTIONS: Record<
 > = {
   stop_calling: {
     label: "Stop calling",
-    description: "Close the lead. No more calls.",
+    description: "Close the contact. Qualified leads convert to CRM; disqualified leads close without redialing.",
     icon: <PhoneOffIcon className="size-4 text-muted-foreground" />,
   },
   call_again: {
     label: "Call again",
-    description: "Retry at a set frequency with the chosen agent.",
+    description: "Schedule retries up to maximum attempts with delay and optional agent handover.",
     icon: <PhoneCallIcon className="size-4 text-emerald-600 dark:text-emerald-400" />,
   },
 };
@@ -136,6 +138,7 @@ export function WorkflowBuilder({
     if (workflow.rules && workflow.rules.length > 0) {
       return workflow.rules;
     }
+    const defaultAgent = availableAgents[0];
     return [
       {
         id: "rule_1",
@@ -158,24 +161,24 @@ export function WorkflowBuilder({
         variables: ["callback_requested"],
         action: "call_again",
         retries: 2,
-        agent_id: null,
-        agent_name: null,
+        agent_id: defaultAgent?.id || null,
+        agent_name: defaultAgent?.name || null,
       },
       {
         id: "rule_4",
         variables: ["no_conversation"],
         action: "call_again",
         retries: 2,
-        agent_id: null,
-        agent_name: null,
+        agent_id: defaultAgent?.id || null,
+        agent_name: defaultAgent?.name || null,
       },
       {
         id: "rule_5",
         variables: ["no_answer", "busy"],
         action: "call_again",
         retries: 2,
-        agent_id: null,
-        agent_name: null,
+        agent_id: defaultAgent?.id || null,
+        agent_name: defaultAgent?.name || null,
       },
       {
         id: "rule_6",
@@ -279,13 +282,14 @@ export function WorkflowBuilder({
 
   function addNewOutcomeRow(initialVariable?: string) {
     const newId = `rule_${Date.now()}`;
+    const defaultAgent = availableAgents[0];
     const newRule: OutcomeRule = {
       id: newId,
       variables: initialVariable ? [initialVariable] : [],
       action: "call_again",
       retries: 2,
-      agent_id: null,
-      agent_name: null,
+      agent_id: defaultAgent?.id || null,
+      agent_name: defaultAgent?.name || null,
     };
     setRules((prev) => [...prev, newRule]);
     toast.success("New outcome row added");
@@ -297,17 +301,27 @@ export function WorkflowBuilder({
       return;
     }
 
-    // Sanitize rules before saving
-    const sanitizedRules: OutcomeRule[] = rules.map((r, idx) => ({
-      id: r.id || `rule_${workflow.id}_${idx + 1}`,
-      variables: r.variables,
-      action: r.action,
-      retries: r.action === "stop_calling" ? 0 : (r.retries ?? 0),
-      delay_minutes: r.action === "stop_calling" ? undefined : r.delay_minutes,
-      agent_id: r.action === "stop_calling" ? null : (r.agent_id || null),
-      agent_name: r.action === "stop_calling" ? null : (r.agent_name || null),
-      whatsapp_template: r.whatsapp_template || null,
-    }));
+    // Sanitize rules and map agent name & ID before saving
+    const sanitizedRules: OutcomeRule[] = rules.map((r, idx) => {
+      const matchedAgent = r.agent_id
+        ? availableAgents.find((a) => a.id === r.agent_id)
+        : null;
+      const agentId = r.action === "stop_calling" ? null : (r.agent_id || null);
+      const agentName = r.action === "stop_calling"
+        ? null
+        : (matchedAgent?.name || r.agent_name || null);
+
+      return {
+        id: r.id || `rule_${workflow.id}_${idx + 1}`,
+        variables: r.variables,
+        action: r.action,
+        retries: r.action === "stop_calling" ? 0 : (r.retries ?? 0),
+        delay_minutes: r.action === "stop_calling" ? undefined : r.delay_minutes,
+        agent_id: agentId,
+        agent_name: agentName,
+        whatsapp_template: r.whatsapp_template || null,
+      };
+    });
 
     setSaving(true);
     try {
@@ -674,10 +688,10 @@ export function WorkflowBuilder({
                               ) : (
                                 <>
                                   <span className="size-5 rounded-full flex items-center justify-center text-[10px] font-semibold bg-muted text-muted-foreground border border-border/60">
-                                    ⚡
+                                    <BotIcon className="size-3" />
                                   </span>
                                   <span className="text-muted-foreground truncate">
-                                    Campaign Default
+                                    Select Voice Agent
                                   </span>
                                 </>
                               )}
@@ -686,39 +700,7 @@ export function WorkflowBuilder({
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="start" className="w-64 p-1">
                             <div className="px-2 py-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
-                              Voice Agent Selection
-                            </div>
-
-                            {/* Option 1: Campaign Default */}
-                            <DropdownMenuItem
-                              onClick={() =>
-                                updateRule(rule.id, {
-                                  agent_id: null,
-                                  agent_name: null,
-                                })
-                              }
-                              className="flex items-center gap-2.5 p-2 cursor-pointer"
-                            >
-                              <span className="size-5 rounded-full flex items-center justify-center text-[10px] font-bold bg-muted text-foreground border border-border shrink-0">
-                                ⚡
-                              </span>
-                              <div className="flex flex-col truncate">
-                                <span className="text-xs font-medium truncate">
-                                  Campaign Default Agent
-                                </span>
-                                <span className="text-[10px] text-muted-foreground">
-                                  Uses primary voice agent
-                                </span>
-                              </div>
-                              {!rule.agent_id && (
-                                <CheckIcon className="size-3.5 ml-auto text-emerald-600 shrink-0" />
-                              )}
-                            </DropdownMenuItem>
-
-                            <DropdownMenuSeparator />
-
-                            <div className="px-2 py-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
-                              Workspace Agents ({availableAgents.length})
+                              Select Voice Agent ({availableAgents.length})
                             </div>
 
                             {availableAgents.length === 0 ? (
@@ -885,15 +867,28 @@ export function WorkflowBuilder({
               name,
               is_active: isActive,
               total_rules: rules.length,
-              rules: rules.map((r, idx) => ({
-                id: r.id || `rule_${idx + 1}`,
-                action: r.action,
-                retries: r.action === "stop_calling" ? 0 : (r.retries ?? 0),
-                ...(r.action !== "stop_calling" && r.delay_minutes ? { delay_minutes: r.delay_minutes } : {}),
-                agent_id: r.action === "stop_calling" ? null : (r.agent_id || null),
-                agent_name: r.action === "stop_calling" ? null : (r.agent_name || null),
-                variables: r.variables,
+              available_agents: availableAgents.map((a) => ({
+                agent_id: a.id,
+                agent_name: a.name,
               })),
+              rules: rules.map((r, idx) => {
+                const matchedAgent = r.agent_id
+                  ? availableAgents.find((a) => a.id === r.agent_id)
+                  : null;
+                const agentId = r.action === "stop_calling" ? null : (r.agent_id || null);
+                const agentName = r.action === "stop_calling"
+                  ? null
+                  : (matchedAgent?.name || r.agent_name || null);
+
+                return {
+                  id: r.id || `rule_${idx + 1}`,
+                  action: r.action,
+                  retries: r.action === "stop_calling" ? 0 : (r.retries ?? 0),
+                  agent_id: agentId,
+                  agent_name: agentName,
+                  variables: r.variables,
+                };
+              }),
             };
             const jsonText = JSON.stringify(formattedJsonObj, null, 2);
             const lines = jsonText.split("\n");

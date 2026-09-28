@@ -14,9 +14,18 @@ import {
   type WorkflowNode,
   type WorkflowTemplate,
 } from "@/types/workflow";
+import { workflowStore, getWorkflowRulesForOrg as _getWorkflowRulesForOrg } from "@/lib/campaigns/workflow-store";
 
-// In-memory workspace cache fallback ensuring zero-downtime if migrations are running
-const workflowStore = new Map<string, Workflow>();
+// "use server" files can only export directly-defined async functions.
+// Re-exporting from another module (even an async fn) fails at build time.
+// So we define a thin wrapper that delegates to the lib.
+export async function getWorkflowRulesForOrg(
+  organisationId: string,
+  workflowId?: string | null,
+): Promise<OutcomeRule[] | null> {
+  return _getWorkflowRulesForOrg(organisationId, workflowId);
+}
+
 
 export async function listWorkflows(
   organisationId: string,

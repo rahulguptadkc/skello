@@ -88,6 +88,13 @@ function pickJsonDate(blob: Record<string, unknown> | null, key: string): string
 // is fetched in batch by hydrateLeads().
 function buildLead(row: LeadRow, snapshot: LatestCallSnapshot | null): Lead {
   const ld = row.lead_data ?? {};
+  const resolvedName =
+    row.name ||
+    pickJsonString(ld, "customer_name") ||
+    pickJsonString(ld, "name") ||
+    pickJsonString(ld, "first_name") ||
+    null;
+
   return {
     id: row.id,
     created_at: row.created_at,
@@ -98,7 +105,7 @@ function buildLead(row: LeadRow, snapshot: LatestCallSnapshot | null): Lead {
     phone_normalized: row.phone_normalized,
     first_seen_at: row.first_seen_at,
     last_contact_at: row.last_contact_at,
-    name: row.name,
+    name: resolvedName,
     current_intent: row.current_intent,
     current_intent_score: row.current_intent_score,
     city: row.city,
@@ -263,6 +270,96 @@ export async function listLeads(
   if (error) return fail(error.message);
 
   const rows = (data ?? []) as unknown as LeadRow[];
+
+  // For any leads missing a name, check campaign_contacts and calls to resolve and persist their name
+  const unnamedPhoneRows = rows.filter((r) => !r.name);
+  if (unnamedPhoneRows.length > 0) {
+    const admin = createAdminClient();
+    const phones = unnamedPhoneRows.map((r) => r.phone!).filter(Boolean);
+    const leadIds = unnamedPhoneRows.map((r) => r.id);
+
+    const allSearchPhones: string[] = [];
+    for (const p of phones) {
+      allSearchPhones.push(p);
+      const digits = p.replace(/[^0-9]/g, "");
+      if (digits) {
+        allSearchPhones.push(digits);
+        allSearchPhones.push("+" + digits);
+        if (digits.length >= 10) {
+          allSearchPhones.push(digits.slice(-10));
+          allSearchPhones.push("+91" + digits.slice(-10));
+          allSearchPhones.push("91" + digits.slice(-10));
+        }
+      }
+    }
+    const uniqueSearchPhones = Array.from(new Set(allSearchPhones));
+
+    const [{ data: contacts }, { data: calls }] = await Promise.all([
+      uniqueSearchPhones.length > 0
+        ? admin
+            .from("campaign_contacts")
+            .select("phone, name")
+            .eq("organisation_id", org.id)
+            .in("phone", uniqueSearchPhones)
+            .not("name", "is", null)
+        : Promise.resolve({ data: null }),
+      admin
+        .from("calls")
+        .select("lead_id, name_extracted, lead_data")
+        .eq("organisation_id", org.id)
+        .in("lead_id", leadIds),
+    ]);
+
+    const nameByPhone = new Map<string, string>();
+    for (const c of contacts ?? []) {
+      if (c.name && c.name.trim()) {
+        const trimmed = c.name.trim();
+        nameByPhone.set(c.phone, trimmed);
+        const digits = c.phone.replace(/[^0-9]/g, "");
+        if (digits) {
+          nameByPhone.set(digits, trimmed);
+          if (digits.length >= 10) {
+            nameByPhone.set(digits.slice(-10), trimmed);
+          }
+        }
+      }
+    }
+
+    const nameByLeadId = new Map<string, string>();
+    for (const call of calls ?? []) {
+      if (call.name_extracted && call.name_extracted.trim()) {
+        nameByLeadId.set(call.lead_id, call.name_extracted.trim());
+      } else if (call.lead_data && typeof call.lead_data === "object") {
+        const ld = call.lead_data as Record<string, unknown>;
+        const nameFromLd =
+          (typeof ld.customer_name === "string" && ld.customer_name.trim()) ||
+          (typeof ld.name === "string" && ld.name.trim()) ||
+          (typeof ld.first_name === "string" && ld.first_name.trim()) ||
+          null;
+        if (nameFromLd) {
+          nameByLeadId.set(call.lead_id, nameFromLd);
+        }
+      }
+    }
+
+    for (const r of rows) {
+      if (!r.name) {
+        const digits = (r.phone || "").replace(/[^0-9]/g, "");
+        const last10 = digits.slice(-10);
+        const resolved =
+          (r.phone ? nameByPhone.get(r.phone) : undefined) ||
+          (digits ? nameByPhone.get(digits) : undefined) ||
+          (last10 ? nameByPhone.get(last10) : undefined) ||
+          nameByLeadId.get(r.id);
+
+        if (resolved) {
+          r.name = resolved;
+          void admin.from("leads").update({ name: resolved }).eq("id", r.id);
+        }
+      }
+    }
+  }
+
   const snapshots = await fetchLatestCallSnapshots(
     org.id,
     rows.map((r) => r.id),
@@ -295,6 +392,49 @@ export async function getLead(id: unknown): Promise<ActionResult<Lead>> {
 
   if (error) return fail(error.message);
   if (!data) return fail("Lead not found");
+
+  if (!data.name && data.phone) {
+    const admin = createAdminClient();
+    const raw = data.phone;
+    const digits = raw.replace(/[^0-9]/g, "");
+    const searchPhones = [raw, digits, "+" + digits];
+    if (digits.length >= 10) {
+      searchPhones.push(digits.slice(-10), "+91" + digits.slice(-10), "91" + digits.slice(-10));
+    }
+
+    const [{ data: contact }, { data: calls }] = await Promise.all([
+      admin
+        .from("campaign_contacts")
+        .select("name")
+        .eq("organisation_id", org.id)
+        .in("phone", Array.from(new Set(searchPhones)))
+        .not("name", "is", null)
+        .limit(1)
+        .maybeSingle<{ name: string | null }>(),
+      admin
+        .from("calls")
+        .select("name_extracted, lead_data")
+        .eq("lead_id", data.id)
+        .order("started_at", { ascending: false })
+        .limit(1)
+        .maybeSingle<{ name_extracted: string | null; lead_data: Record<string, unknown> | null }>(),
+    ]);
+
+    let resolvedName = contact?.name || calls?.name_extracted || null;
+    if (!resolvedName && calls?.lead_data && typeof calls.lead_data === "object") {
+      const ld = calls.lead_data as Record<string, unknown>;
+      resolvedName =
+        (typeof ld.customer_name === "string" && ld.customer_name.trim()) ||
+        (typeof ld.name === "string" && ld.name.trim()) ||
+        (typeof ld.first_name === "string" && ld.first_name.trim()) ||
+        null;
+    }
+
+    if (resolvedName) {
+      data.name = resolvedName;
+      void admin.from("leads").update({ name: resolvedName }).eq("id", data.id);
+    }
+  }
 
   const snapshots = await fetchLatestCallSnapshots(org.id, [data.id]);
   return ok(buildLead(data, snapshots.get(data.id) ?? null));

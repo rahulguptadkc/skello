@@ -138,15 +138,27 @@ export async function initiateBolnaCall(
     agent_id: input.agentId,
     recipient_phone_number: recipient,
     ...(fromPhone ? { from_phone_number: fromPhone } : {}),
-    ...(input.metadata ? { user_data: input.metadata } : {}),
+    ...(input.metadata
+      ? {
+          user_data: input.metadata,
+          recipient_data: input.metadata,
+        }
+      : {}),
   };
 
-  // Lightweight trace — no raw phone numbers in prod logs. If you need to
-  // debug a specific dial, expand this temporarily and remove before commit.
-  console.log("[bolna] POST /call", {
-    agent: input.agentId,
-    recipientPrefixed: recipient.startsWith("+"),
-    hasFromPhone: !!fromPhone,
+  const customerName =
+    input.metadata?.customer_name ??
+    input.metadata?.name ??
+    input.metadata?.first_name ??
+    null;
+
+  console.log("[bolna] POST /call payload dispatch:", {
+    agent_id: input.agentId,
+    recipient_phone: recipient ? `${recipient.slice(0, 4)}****${recipient.slice(-4)}` : null,
+    customer_name: customerName,
+    passing_customer_name: Boolean(customerName),
+    user_data_keys: input.metadata ? Object.keys(input.metadata) : [],
+    has_from_phone: Boolean(fromPhone),
   });
 
   const response = await fetch(`${bolnaBaseUrl()}/call`, {

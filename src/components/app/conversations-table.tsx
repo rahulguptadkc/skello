@@ -384,13 +384,24 @@ export function ConversationsTable({
             transcriptCall
               ? {
                   ...transcriptCall,
-                  lead_name: transcriptCall.lead?.name ?? null,
+                  lead_name:
+                    transcriptCall.lead?.name ??
+                    ((transcriptCall.lead_data as Record<string, unknown> | null)?.customer_name as string) ??
+                    ((transcriptCall.lead_data as Record<string, unknown> | null)?.name as string) ??
+                    transcriptCall.name_extracted ??
+                    null,
                   lead_status: transcriptCall.lead?.status ?? null,
                   lead_intent: transcriptCall.lead?.current_intent ?? null,
                 }
               : null
           }
-          counterpartyName={transcriptCall?.lead?.name ?? null}
+          counterpartyName={
+            transcriptCall?.lead?.name ??
+            ((transcriptCall?.lead_data as Record<string, unknown> | null)?.customer_name as string) ??
+            ((transcriptCall?.lead_data as Record<string, unknown> | null)?.name as string) ??
+            transcriptCall?.name_extracted ??
+            null
+          }
           open={transcriptOpen}
           onOpenChange={setTranscriptOpen}
         />
@@ -413,7 +424,13 @@ const ConversationTableRow = React.memo(function ConversationTableRow({
   const inbound = call.direction === "inbound";
   const counterparty = inbound ? call.from_phone : call.to_phone;
   const phone = call.lead?.phone ?? counterparty ?? null;
-  const name = call.lead?.name ?? null;
+  const name =
+    call.lead?.name ??
+    ((call.lead_data as Record<string, unknown> | null)?.customer_name as string) ??
+    ((call.lead_data as Record<string, unknown> | null)?.name as string) ??
+    ((call.lead_data as Record<string, unknown> | null)?.first_name as string) ??
+    call.name_extracted ??
+    null;
   const hasTranscript =
     call.transcript_status === "ready" || !!call.transcript;
   const hasRecording = !!call.recording_url;

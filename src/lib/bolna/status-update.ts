@@ -206,6 +206,9 @@ export async function applyCallStatusUpdate(
     const contactId = data.campaign_contact_id;
     const callId = data.id;
     const status = input.status;
+    console.log(
+      `[status-update] Non-completed terminal status "${status}" received for contact ${contactId} (call: ${callId})`,
+    );
     after(async () => {
       try {
         await applyCampaignContactOutcome({
@@ -213,6 +216,9 @@ export async function applyCallStatusUpdate(
           callId,
           callStatus: status,
         });
+        console.log(
+          `[status-update] Outcome applied for non-completed call ${callId} (contact: ${contactId})`,
+        );
       } catch (err) {
         console.error("[status-update] campaign outcome failed", err);
       }

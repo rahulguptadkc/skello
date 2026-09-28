@@ -6,6 +6,7 @@ import Link from "next/link";
 import Papa from "papaparse";
 import {
   ArrowUpRightIcon,
+  BotIcon,
   CheckCircle2Icon,
   CheckIcon,
   DownloadIcon,
@@ -13,8 +14,11 @@ import {
   FileCheckIcon,
   FileSpreadsheetIcon,
   FileTextIcon,
+  GitBranchIcon,
   Loader2Icon,
   MinusIcon,
+  PhoneCallIcon,
+  PhoneOffIcon,
   PlusIcon,
   RotateCcwIcon,
   SearchIcon,
@@ -54,7 +58,7 @@ import { parseCampaignCsv, type ParsedCsv } from "@/lib/campaigns/csv-parse";
 import { cn } from "@/lib/utils";
 import type { CampaignRetryTrigger } from "@/types/campaign";
 import type { VoiceConfig } from "@/types/voice-config";
-import type { Workflow } from "@/types/workflow";
+import type { OutcomeRule, Workflow } from "@/types/workflow";
 
 type ScheduleMode = "now" | "later";
 
@@ -167,6 +171,10 @@ export function CampaignUploadDialog({
   const [workflows, setWorkflows] = React.useState<Workflow[]>([]);
   const [workflowChoice, setWorkflowChoice] = React.useState<string>("");
   const [workflowsLoading, setWorkflowsLoading] = React.useState(false);
+  const chosenWf = React.useMemo(
+    () => workflows.find((w) => w.id === workflowChoice),
+    [workflows, workflowChoice],
+  );
 
   // Voice config (agents + dialling numbers). Fetched lazily once the dialog
   // opens; the empty-string select value means "use the workspace default".
@@ -192,9 +200,23 @@ export function CampaignUploadDialog({
     if (wfRes.success && wfRes.data) {
       setWorkflows(wfRes.data);
       setWorkflowChoice((prev) => {
-        if (prev) return prev;
-        const def = wfRes.data.find((w) => w.is_active) || wfRes.data[0];
-        return def ? def.id : "";
+        const chosenId = prev || (wfRes.data.find((w) => w.is_active) || wfRes.data[0])?.id || "";
+        if (chosenId) {
+          const chosen = wfRes.data.find((w) => w.id === chosenId);
+          if (chosen?.rules && chosen.rules.length > 0) {
+            const maxWfRetries = Math.max(
+              0,
+              ...chosen.rules
+                .filter((r) => r.action === "call_again")
+                .map((r) => Number(r.retries) || 0),
+            );
+            if (maxWfRetries > 0) {
+              setMaxRetries(maxWfRetries);
+              setMaxConnectedAttempts(maxWfRetries + 1);
+            }
+          }
+        }
+        return chosenId;
       });
     }
 
@@ -1071,51 +1093,7 @@ export function CampaignUploadDialog({
             ) : null}
           </div>
 
-          <div className="grid gap-3.5 rounded-lg border border-border/60 bg-muted/30 p-3.5">
-            <div>
-              <Label className="text-sm font-semibold tracking-tight text-foreground">
-                Retry Configuration
-              </Label>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Configure retry attempts, backoff window, and maximum connected attempt boundaries.
-              </p>
-            </div>
-
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <StepperInput
-                label="Max Retries"
-                value={maxRetries}
-                onChange={setMaxRetries}
-                min={0}
-                max={10}
-                step={1}
-                disabled={submitting}
-              />
-              <StepperInput
-                label="Retry Interval (mins)"
-                value={retryIntervalMinutes}
-                onChange={setRetryIntervalMinutes}
-                min={1}
-                max={1440}
-                step={5}
-                disabled={submitting || maxRetries === 0}
-              />
-              <StepperInput
-                label="Max connected attempts"
-                value={maxConnectedAttempts}
-                onChange={setMaxConnectedAttempts}
-                min={1}
-                max={20}
-                step={1}
-                disabled={submitting}
-              />
-            </div>
-
-            <p className="text-[11px] leading-relaxed text-muted-foreground">
-              Calls will only be placed within the <span className="font-medium text-foreground">Max Retries</span> limit and up to <span className="font-medium text-foreground">{maxConnectedAttempts} connected call{maxConnectedAttempts > 1 ? "s" : ""}</span>. Once reached, the action terminates calling.
-            </p>
-          </div>
-
+          {/* Workflow Selector */}
           <div className="grid gap-3 rounded-lg border border-border/60 bg-muted/30 p-3.5">
             <div>
               <Label htmlFor="campaign-workflow" className="text-sm font-semibold tracking-tight text-foreground">
@@ -1129,7 +1107,23 @@ export function CampaignUploadDialog({
             {workflows.length > 0 ? (
               <Select
                 value={workflowChoice}
-                onValueChange={(v) => setWorkflowChoice(v ?? "")}
+                onValueChange={(v) => {
+                  const id = v ?? "";
+                  setWorkflowChoice(id);
+                  const chosen = workflows.find((w) => w.id === id);
+                  if (chosen?.rules && chosen.rules.length > 0) {
+                    const maxWfRetries = Math.max(
+                      0,
+                      ...chosen.rules
+                        .filter((r) => r.action === "call_again")
+                        .map((r) => Number(r.retries) || 0),
+                    );
+                    if (maxWfRetries > 0) {
+                      setMaxRetries(maxWfRetries);
+                      setMaxConnectedAttempts(maxWfRetries + 1);
+                    }
+                  }
+                }}
                 disabled={submitting || workflowsLoading}
               >
                 <SelectTrigger id="campaign-workflow" className="w-full bg-background">
@@ -1163,6 +1157,130 @@ export function CampaignUploadDialog({
                 </Link>
               </div>
             )}
+          </div>
+
+          {/* Retry Configuration - Connected to Workflow */}
+          <div className="grid gap-3.5 rounded-lg border border-border/60 bg-muted/30 p-3.5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
+              <div>
+                <div className="flex items-center gap-2">
+                  <Label className="text-sm font-semibold tracking-tight text-foreground">
+                    Retry Configuration
+                  </Label>
+                  {chosenWf ? (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 px-2 py-0.5 text-[11px] font-medium">
+                      <GitBranchIcon className="size-3" /> Connected to {chosenWf.name}
+                    </span>
+                  ) : null}
+                </div>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Configure retry attempts, backoff window, and maximum connected attempt boundaries.
+                </p>
+              </div>
+            </div>
+
+            {/* Workflow Rules Preview */}
+            {chosenWf?.rules && chosenWf.rules.length > 0 ? (
+              <div className="rounded-md border border-border/60 bg-background/80 p-3 space-y-2">
+                <div className="flex items-center justify-between text-[11px] font-medium text-muted-foreground">
+                  <span className="flex items-center gap-1.5 text-foreground font-semibold">
+                    <GitBranchIcon className="size-3.5 text-emerald-600 dark:text-emerald-400" />
+                    Workflow Outcome Rules ({chosenWf.rules.length})
+                  </span>
+                  <Link
+                    href={`/workflows/${chosenWf.id}`}
+                    target="_blank"
+                    className="text-emerald-600 dark:text-emerald-400 hover:underline flex items-center gap-1"
+                  >
+                    Edit workflow <ArrowUpRightIcon className="size-3" />
+                  </Link>
+                </div>
+                <div className="grid grid-cols-1 gap-1.5 max-h-36 overflow-y-auto pr-1">
+                  {chosenWf.rules.map((rule: OutcomeRule) => {
+                    const isCallAgain = rule.action === "call_again";
+                    const assignedAgent = voiceConfig?.agents.find((a) => a.id === rule.agent_id);
+                    const agentDisplay = rule.agent_name || assignedAgent?.label;
+                    return (
+                      <div
+                        key={rule.id}
+                        className="flex flex-wrap items-center justify-between gap-2 rounded border border-border/40 bg-muted/40 px-2.5 py-1.5 text-xs"
+                      >
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="font-mono text-[11px] text-foreground font-medium truncate max-w-[200px]">
+                            {rule.variables.slice(0, 3).join(", ")}
+                            {rule.variables.length > 3 ? ` +${rule.variables.length - 3}` : ""}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          {isCallAgain ? (
+                            <span className="inline-flex items-center gap-1 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 px-1.5 py-0.5 text-[10px] font-medium border border-emerald-500/20">
+                              <PhoneCallIcon className="size-2.5" /> Call again ({rule.retries}x)
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 rounded bg-zinc-500/10 text-muted-foreground px-1.5 py-0.5 text-[10px] font-medium border border-zinc-500/20">
+                              <PhoneOffIcon className="size-2.5" /> Stop calling
+                            </span>
+                          )}
+                          {isCallAgain && agentDisplay ? (
+                            <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground font-medium">
+                              <BotIcon className="size-2.5" /> {agentDisplay}
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
+
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <StepperInput
+                label="Max Retries"
+                value={maxRetries}
+                onChange={setMaxRetries}
+                min={0}
+                max={10}
+                step={1}
+                disabled={submitting}
+              />
+              <StepperInput
+                label="Retry Interval (mins)"
+                value={retryIntervalMinutes}
+                onChange={setRetryIntervalMinutes}
+                min={1}
+                max={1440}
+                step={5}
+                disabled={submitting || maxRetries === 0}
+              />
+              <StepperInput
+                label="Max connected attempts"
+                value={maxConnectedAttempts}
+                onChange={setMaxConnectedAttempts}
+                min={1}
+                max={20}
+                step={1}
+                disabled={submitting}
+              />
+            </div>
+
+            <p className="text-[11px] leading-relaxed text-muted-foreground">
+              {chosenWf ? (
+                <>
+                  Dynamic retry routing and agent assignments are actively driven by{" "}
+                  <span className="font-medium text-foreground">{chosenWf.name}</span>. The{" "}
+                  <span className="font-medium text-foreground">Max Retries</span> ({maxRetries}) and{" "}
+                  <span className="font-medium text-foreground">{maxConnectedAttempts} max connected call{maxConnectedAttempts > 1 ? "s" : ""}</span>{" "}
+                  serve as the campaign-wide safety ceiling with a{" "}
+                  <span className="font-medium text-foreground">{retryIntervalMinutes}m</span> delay between dials.
+                </>
+              ) : (
+                <>
+                  Calls will only be placed within the <span className="font-medium text-foreground">Max Retries</span> limit and up to{" "}
+                  <span className="font-medium text-foreground">{maxConnectedAttempts} connected call{maxConnectedAttempts > 1 ? "s" : ""}</span>.
+                </>
+              )}
+            </p>
           </div>
         </div>
 

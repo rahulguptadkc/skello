@@ -1,9 +1,11 @@
 import {
   ActivityIcon,
+  BotIcon,
   ClockIcon,
   PhoneCallIcon,
   PhoneIcon,
   PhoneOutgoingIcon,
+  RefreshCwIcon,
   TargetIcon,
   TrendingUpIcon,
   TriangleAlertIcon,
@@ -239,11 +241,11 @@ export function CampaignPerformance({ stats }: { stats: CampaignStats }) {
               <DataTableHead>
                 <th className="px-5 py-3 font-medium">Contact</th>
                 <th className="px-3 py-3 font-medium">State</th>
-                <th className="px-3 py-3 font-medium">Reason</th>
-                <th className="px-3 py-3 text-right font-medium">Attempts</th>
-                <th className="px-5 py-3 text-right font-medium">
-                  Next attempt
-                </th>
+                <th className="px-3 py-3 font-medium">Will Retry?</th>
+                <th className="px-3 py-3 font-medium">Retry Time</th>
+                <th className="px-3 py-3 font-medium">Retry Agent</th>
+                <th className="px-3 py-3 font-medium">Reason / Disposition</th>
+                <th className="px-5 py-3 text-right font-medium">Attempts</th>
               </DataTableHead>
               <tbody className="divide-y divide-border/60">
                 {stats.contacts.map((c) => {
@@ -263,14 +265,59 @@ export function CampaignPerformance({ stats }: { stats: CampaignStats }) {
                       <td className="px-3 py-2.5">
                         <Badge variant={meta.variant}>{meta.label}</Badge>
                       </td>
+                      <td className="px-3 py-2.5">
+                        {c.willRetry ? (
+                          <Badge variant="warning" className="gap-1 font-medium">
+                            <RefreshCwIcon className="size-3" />
+                            Yes
+                          </Badge>
+                        ) : (
+                          <Badge variant="neutral" className="text-muted-foreground font-normal">
+                            No
+                          </Badge>
+                        )}
+                      </td>
+                      <td className="px-3 py-2.5 tabular-nums">
+                        {c.willRetry && c.nextAttemptLabel ? (
+                          <div className="flex flex-col gap-0.5">
+                            <span className="flex items-center gap-1 font-medium text-foreground">
+                              <ClockIcon className="size-3 shrink-0 text-primary" />
+                              {c.nextAttemptLabel}
+                            </span>
+                            {c.nextAttemptFormatted ? (
+                              <span className="text-[11px] text-muted-foreground">
+                                {c.nextAttemptFormatted}
+                              </span>
+                            ) : null}
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2.5">
+                        {c.willRetry && c.retryAgentName ? (
+                          <div className="flex items-center gap-1.5">
+                            <BotIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                            <span className="max-w-[150px] truncate font-medium text-foreground">
+                              {c.retryAgentName}
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </td>
                       <td className="px-3 py-2.5 text-muted-foreground">
-                        {c.detail}
+                        {c.willRetry && c.detail.startsWith("Workflow retry") ? (
+                          <span className="inline-flex items-center gap-1 font-medium text-foreground">
+                            <RefreshCwIcon className="size-3 shrink-0 text-warning" />
+                            {c.detail}
+                          </span>
+                        ) : (
+                          <span>{c.detail}</span>
+                        )}
                       </td>
-                      <td className="px-3 py-2.5 text-right tabular-nums">
+                      <td className="px-5 py-2.5 text-right tabular-nums">
                         {c.attempt}/{c.maxAttempts}
-                      </td>
-                      <td className="px-5 py-2.5 text-right tabular-nums text-muted-foreground">
-                        {c.nextAttemptLabel ?? "—"}
                       </td>
                     </tr>
                   );
