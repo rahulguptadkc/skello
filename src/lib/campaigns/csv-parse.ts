@@ -34,10 +34,12 @@ const PHONE_HEADER_HINTS = ["phone", "mobile", "number", "msisdn", "contact"];
 const NAME_HEADER_HINTS = [
   "customer_name",
   "customer name",
+  "customer",
   "name",
   "full_name",
   "fullname",
   "contact_name",
+  "contact name",
   "cust_name",
   "client_name",
   "client name",
@@ -151,12 +153,18 @@ export function parseCampaignCsv(
               cleaned: finalName,
             });
           }
+          const contactMeta = { ...c.metadata };
+          if (finalName) {
+            contactMeta.customer = finalName;
+            contactMeta.customer_name = finalName;
+            contactMeta.contact_name = finalName;
+          }
           return {
             raw_phone: c.raw_phone,
             phone: c.phone,
             name: finalName,
             raw_name: c.raw_name,
-            metadata: c.metadata,
+            metadata: contactMeta,
           };
         });
 

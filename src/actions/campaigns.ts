@@ -278,16 +278,26 @@ export async function createCampaign(
     ? new Date().toISOString()
     : scheduledAt;
 
-  const contactRows = parsed.data.contacts.map((c) => ({
-    campaign_id: campaignRow.id,
-    organisation_id: parsed.data.organisation_id,
-    raw_phone: c.raw_phone,
-    phone: c.phone,
-    name: c.name ?? null,
-    metadata: c.metadata,
-    status: "pending" as const,
-    next_attempt_at: firstAttemptAt,
-  }));
+  const contactRows = parsed.data.contacts.map((c) => {
+    const contactName = c.name ?? null;
+    const metadata: Record<string, unknown> = { ...(c.metadata || {}) };
+    if (contactName) {
+      metadata.customer = contactName;
+      metadata.customer_name = contactName;
+      metadata.contact_name = contactName;
+      metadata.name = contactName;
+    }
+    return {
+      campaign_id: campaignRow.id,
+      organisation_id: parsed.data.organisation_id,
+      raw_phone: c.raw_phone,
+      phone: c.phone,
+      name: contactName,
+      metadata,
+      status: "pending" as const,
+      next_attempt_at: firstAttemptAt,
+    };
+  });
 
   const { error: contactsErr } = await admin
     .from("campaign_contacts")

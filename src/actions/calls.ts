@@ -133,6 +133,10 @@ export async function initiateCall(
         lead_id: lead.id,
         organisation_id: org.id,
         lead_name: lead.name,
+        customer_name: lead.name,
+        customer: lead.name,
+        contact_name: lead.name,
+        name: lead.name,
       },
     });
   } catch (err) {

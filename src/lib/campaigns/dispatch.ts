@@ -346,6 +346,42 @@ export function pickHealthyNumber(input: PickNumberInput): PickNumberResult {
 export const FALLBACK_NO_NUMBER = "";
 
 /**
+ * Resolves a dial-ready customer name for a campaign contact by checking
+ * the explicit `name` column first, followed by common metadata keys.
+ */
+export function resolveContactName(contact: {
+  name?: string | null;
+  metadata?: Record<string, unknown> | null;
+}): string | null {
+  const direct = typeof contact.name === "string" ? contact.name.trim() : "";
+  if (direct) return direct;
+
+  const meta = contact.metadata;
+  if (!meta || typeof meta !== "object") return null;
+
+  const candidates = [
+    meta.customer,
+    meta.customer_name,
+    meta.contact_name,
+    meta.name,
+    meta.first_name,
+    meta.full_name,
+    meta.lead_name,
+    meta.client_name,
+    meta.cust_name,
+    meta.recipient_name,
+  ];
+
+  for (const c of candidates) {
+    if (typeof c === "string" && c.trim()) {
+      return c.trim();
+    }
+  }
+
+  return null;
+}
+
+/**
  * Drain pending campaign contacts and place outbound dials.
  *
  * Used by:
@@ -657,7 +693,18 @@ export async function dispatchDueCampaignContacts(): Promise<DispatchResult> {
       // number; a least-bad (degraded) dial leaves it high so we stay in
       // least-bad mode until a number actually recovers.
       const resetHealthDefer = !pick.degraded && contact.health_defer_count > 0;
-      const contactName = contact.name || null;
+      const contactName = resolveContactName(contact);
+      const nameFields = contactName
+        ? {
+            customer: contactName,
+            customer_name: contactName,
+            contact_name: contactName,
+            name: contactName,
+            first_name: contactName,
+            first_name_hindi: contactName,
+            recipient_name: contactName,
+          }
+        : {};
 
       try {
         const result = await initiateBolnaCall({
@@ -669,15 +716,10 @@ export async function dispatchDueCampaignContacts(): Promise<DispatchResult> {
             organisation_id: contact.organisation_id,
             campaign_id: contact.campaign_id,
             campaign_contact_id: contact.id,
-            name: contactName,
-            customer_name: contactName,
-            first_name: contactName,
-            first_name_hindi: contactName,
-            contact_name: contactName,
-            recipient_name: contactName,
             phone: contact.phone,
             user_number: contact.phone,
-            ...contact.metadata,
+            ...(contact.metadata || {}),
+            ...nameFields,
           },
         });
 
@@ -694,13 +736,10 @@ export async function dispatchDueCampaignContacts(): Promise<DispatchResult> {
             agent_id: resolvedAgentId,
             status: "initiated",
             lead_data: {
-              customer_name: contactName,
-              name: contactName,
-              first_name: contactName,
-              first_name_hindi: contactName,
               phone: contact.phone,
               user_number: contact.phone,
               ...(contact.metadata || {}),
+              ...nameFields,
             },
           })
           .select("id")
@@ -762,13 +801,10 @@ export async function dispatchDueCampaignContacts(): Promise<DispatchResult> {
           direction: "outbound",
           error_message: reason.slice(0, 500),
           lead_data: {
-            customer_name: contactName,
-            name: contactName,
-            first_name: contactName,
-            first_name_hindi: contactName,
             phone: contact.phone,
             user_number: contact.phone,
             ...(contact.metadata || {}),
+            ...nameFields,
           },
         });
 
