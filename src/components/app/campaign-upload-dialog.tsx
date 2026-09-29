@@ -199,25 +199,9 @@ export function CampaignUploadDialog({
 
     if (wfRes.success && wfRes.data) {
       setWorkflows(wfRes.data);
-      setWorkflowChoice((prev) => {
-        const chosenId = prev || (wfRes.data.find((w) => w.is_active) || wfRes.data[0])?.id || "";
-        if (chosenId) {
-          const chosen = wfRes.data.find((w) => w.id === chosenId);
-          if (chosen?.rules && chosen.rules.length > 0) {
-            const maxWfRetries = Math.max(
-              0,
-              ...chosen.rules
-                .filter((r) => r.action === "call_again")
-                .map((r) => Number(r.retries) || 0),
-            );
-            if (maxWfRetries > 0) {
-              setMaxRetries(maxWfRetries);
-              setMaxConnectedAttempts(maxWfRetries + 1);
-            }
-          }
-        }
-        return chosenId;
-      });
+      // By default: "No workflow selected" (workflowChoice remains "").
+      // Do NOT auto-select the first workflow so user sees "No workflow selected".
+      setWorkflowChoice((prev) => prev || "");
     }
 
     if (!res.success) {
@@ -480,6 +464,13 @@ export function CampaignUploadDialog({
       };
     }
 
+    if (maxConnectedAttempts > maxRetries) {
+      toast.error(
+        "Max Retries should always be greater than or equal to Max connected attempts.",
+      );
+      return;
+    }
+
     const chosenWf = workflows.find((w) => w.id === workflowChoice);
 
     setSubmitting(true);
@@ -499,8 +490,12 @@ export function CampaignUploadDialog({
         from_phone_number:
           fromPhoneChoices.length === 1 ? fromPhoneChoices[0] : null,
         from_phone_numbers: fromPhoneChoices,
-        workflow_id: workflowChoice || null,
-        workflow_name: chosenWf?.name || null,
+        workflow_id:
+          workflowChoice && workflowChoice !== "none" ? workflowChoice : null,
+        workflow_name:
+          workflowChoice && workflowChoice !== "none"
+            ? chosenWf?.name || null
+            : null,
         max_attempts: maxRetries + 1,
         max_connected_attempts: maxConnectedAttempts,
         retry_interval_seconds: retryIntervalMinutes * 60,
@@ -1106,38 +1101,43 @@ export function CampaignUploadDialog({
 
             {workflows.length > 0 ? (
               <Select
-                value={workflowChoice}
+                value={workflowChoice || "none"}
                 onValueChange={(v) => {
-                  const id = v ?? "";
+                  const id = (v === "none" ? "" : v) ?? "";
                   setWorkflowChoice(id);
-                  const chosen = workflows.find((w) => w.id === id);
-                  if (chosen?.rules && chosen.rules.length > 0) {
-                    const maxWfRetries = Math.max(
-                      0,
-                      ...chosen.rules
-                        .filter((r) => r.action === "call_again")
-                        .map((r) => Number(r.retries) || 0),
-                    );
-                    if (maxWfRetries > 0) {
-                      setMaxRetries(maxWfRetries);
-                      setMaxConnectedAttempts(maxWfRetries + 1);
+                  if (id) {
+                    const chosen = workflows.find((w) => w.id === id);
+                    if (chosen?.rules && chosen.rules.length > 0) {
+                      const maxWfRetries = Math.max(
+                        0,
+                        ...chosen.rules
+                          .filter((r) => r.action === "call_again")
+                          .map((r) => Number(r.retries) || 0),
+                      );
+                      if (maxWfRetries > 0) {
+                        setMaxRetries(maxWfRetries);
+                        setMaxConnectedAttempts(maxWfRetries + 1);
+                      }
                     }
                   }
                 }}
                 disabled={submitting || workflowsLoading}
               >
                 <SelectTrigger id="campaign-workflow" className="w-full bg-background">
-                  <SelectValue placeholder="Select workflow...">
+                  <SelectValue placeholder="No workflow selected">
                     {(value: unknown) => {
-                      if (typeof value !== "string" || !value) {
-                        return "Select a workflow";
+                      if (typeof value !== "string" || !value || value === "none") {
+                        return "No workflow selected";
                       }
                       const found = workflows.find((w) => w.id === value);
-                      return found ? found.name : "Select a workflow";
+                      return found ? found.name : "No workflow selected";
                     }}
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="none">
+                    <span className="text-muted-foreground">No workflow selected</span>
+                  </SelectItem>
                   {workflows.map((w) => (
                     <SelectItem key={w.id} value={w.id}>
                       <span className="font-medium">{w.name}</span>
@@ -1187,13 +1187,6 @@ export function CampaignUploadDialog({
                     <GitBranchIcon className="size-3.5 text-emerald-600 dark:text-emerald-400" />
                     Workflow Outcome Rules ({chosenWf.rules.length})
                   </span>
-                  <Link
-                    href={`/workflows/${chosenWf.id}`}
-                    target="_blank"
-                    className="text-emerald-600 dark:text-emerald-400 hover:underline flex items-center gap-1"
-                  >
-                    Edit workflow <ArrowUpRightIcon className="size-3" />
-                  </Link>
                 </div>
                 <div className="grid grid-cols-1 gap-1.5 max-h-36 overflow-y-auto pr-1">
                   {chosenWf.rules.map((rule: OutcomeRule) => {
@@ -1243,6 +1236,7 @@ export function CampaignUploadDialog({
                 max={10}
                 step={1}
                 disabled={submitting}
+                hasError={maxConnectedAttempts > maxRetries}
               />
               <StepperInput
                 label="Retry Interval (mins)"
@@ -1261,8 +1255,16 @@ export function CampaignUploadDialog({
                 max={20}
                 step={1}
                 disabled={submitting}
+                hasError={maxConnectedAttempts > maxRetries}
               />
             </div>
+
+            {maxConnectedAttempts > maxRetries ? (
+              <div className="flex items-center gap-1.5 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs font-medium text-destructive animate-in fade-in-50 duration-200">
+                <XCircleIcon className="size-4 shrink-0 text-destructive" />
+                <span>Max Retries should always be greater than or equal to Max connected attempts.</span>
+              </div>
+            ) : null}
 
             <p className="text-[11px] leading-relaxed text-muted-foreground">
               {chosenWf ? (
@@ -1296,7 +1298,11 @@ export function CampaignUploadDialog({
             type="button"
             onClick={onConfirm}
             disabled={
-              submitting || parsing || !parsed || parsed.valid_rows === 0
+              submitting ||
+              parsing ||
+              !parsed ||
+              parsed.valid_rows === 0 ||
+              maxConnectedAttempts > maxRetries
             }
           >
             {submitting ? <Loader2Icon className="animate-spin" /> : null}
@@ -1608,6 +1614,7 @@ function StepperInput({
   max = 100,
   step = 1,
   disabled = false,
+  hasError = false,
 }: {
   label: string;
   value: number;
@@ -1616,13 +1623,28 @@ function StepperInput({
   max?: number;
   step?: number;
   disabled?: boolean;
+  hasError?: boolean;
 }) {
   return (
     <div className="grid gap-1.5">
-      <Label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+      <Label
+        className={cn(
+          "text-xs font-semibold",
+          hasError
+            ? "text-destructive"
+            : "text-slate-700 dark:text-slate-300",
+        )}
+      >
         {label}
       </Label>
-      <div className="flex h-10 items-center justify-between rounded-xl border border-border/80 bg-slate-100/80 dark:bg-slate-800/80 px-1.5 shadow-xs transition-colors hover:border-foreground/30 focus-within:border-ring">
+      <div
+        className={cn(
+          "flex h-10 items-center justify-between rounded-xl border px-1.5 shadow-xs transition-colors",
+          hasError
+            ? "border-destructive/80 bg-destructive/5 text-destructive hover:border-destructive"
+            : "border-border/80 bg-slate-100/80 dark:bg-slate-800/80 hover:border-foreground/30 focus-within:border-ring",
+        )}
+      >
         <button
           type="button"
           disabled={disabled || value <= min}

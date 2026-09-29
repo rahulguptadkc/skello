@@ -374,13 +374,18 @@ export function decideOutcome(input: DecideOutcomeInput): OutcomeDecision {
 
   // ---- Disposition tier (completed calls only) ----------------------------
   if (callStatus === "completed") {
+    const effectiveConnectedCount = connectedCount + 1;
+    const maxConnected = campaign.max_connected_attempts;
+    const connectedExhausted =
+      maxConnected !== undefined && effectiveConnectedCount >= maxConnected;
+
     // Record the actual key the agent emitted (or the reserved fallback when
     // none was extracted) so stats can map it back to the policy. Resolve the
     // ACTION via the policy, falling back for any unconfigured key.
     const action = policy.actions[outcomeKey] ?? policy.fallbackAction;
 
     if (action === "callback") {
-      if (callbackCount < campaign.max_callbacks) {
+      if (!connectedExhausted && callbackCount < campaign.max_callbacks) {
         return {
           kind: "rearm",
           patch: {
@@ -397,15 +402,15 @@ export function decideOutcome(input: DecideOutcomeInput): OutcomeDecision {
           },
         };
       }
-      // Engaged customer, but we've honored as many callbacks as allowed —
+      // Engaged customer, but we've reached max connected attempts or honored as many callbacks as allowed —
       // close as a success rather than re-dial indefinitely.
       return succeedDecision(basePatch, outcomeKey);
     }
 
     if (action === "retry") {
       // Disposition-driven retry: re-dial at the standard interval if we're
-      // still under the dial allowance, otherwise it's terminal.
-      const capHit = attempt >= campaign.max_attempts + callbackCount;
+      // still under the dial allowance AND under max connected attempts.
+      const capHit = attempt >= campaign.max_attempts + callbackCount || connectedExhausted;
       if (!capHit) {
         return {
           kind: "rearm",
@@ -425,7 +430,9 @@ export function decideOutcome(input: DecideOutcomeInput): OutcomeDecision {
         patch: {
           ...basePatch,
           status: "failed",
-          last_error: `Retries exhausted (${outcomeKey})`,
+          last_error: connectedExhausted
+            ? `Max connected attempts reached (${maxConnected})`
+            : `Retries exhausted (${outcomeKey})`,
           last_outcome: outcomeKey,
         },
       };
@@ -453,8 +460,11 @@ export function decideOutcome(input: DecideOutcomeInput): OutcomeDecision {
     campaign.retry_on.includes(callStatus as CampaignRetryTrigger) &&
     RETRY_ELIGIBLE.has(callStatus);
 
+  const maxConnected = campaign.max_connected_attempts;
+  const connectedExhausted =
+    maxConnected !== undefined && connectedCount >= maxConnected;
   // Honored callbacks extend the dial allowance on top of the technical cap.
-  const capHit = attempt >= campaign.max_attempts + callbackCount;
+  const capHit = attempt >= campaign.max_attempts + callbackCount || connectedExhausted;
 
   if (isRetryable && !capHit) {
     return {
@@ -469,7 +479,16 @@ export function decideOutcome(input: DecideOutcomeInput): OutcomeDecision {
     };
   }
 
-  return { kind: "fail", patch: { ...basePatch, status: "failed" } };
+  return {
+    kind: "fail",
+    patch: {
+      ...basePatch,
+      status: "failed",
+      ...(connectedExhausted
+        ? { last_error: `Max connected attempts reached (${maxConnected})` }
+        : {}),
+    },
+  };
 }
 
 function succeedDecision(

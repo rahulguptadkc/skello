@@ -26,6 +26,7 @@ import {
 import { toast } from "sonner";
 
 import { deleteWorkflow, saveWorkflow } from "@/actions/workflows";
+import { WorkflowConfigDialog } from "./workflow-config-dialog";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -834,185 +835,15 @@ export function WorkflowBuilder({
       </div>
 
       {/* JSON Viewer Dialog */}
-      <Dialog open={jsonOpen} onOpenChange={setJsonOpen}>
-        <DialogContent className="w-[95vw] max-w-4xl sm:max-w-4xl md:max-w-4xl lg:max-w-4xl p-0 gap-0 overflow-hidden bg-background border-border shadow-2xl rounded-2xl">
-          <div className="p-6 border-b border-border/80 bg-muted/20">
-            <div className="flex items-start justify-between gap-4">
-              <div className="space-y-1">
-                <DialogTitle className="flex items-center gap-2.5 text-base font-semibold">
-                  <div className="size-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-600 dark:text-emerald-400">
-                    <Code2Icon className="size-4.5" />
-                  </div>
-                  <span>Workflow Configuration JSON</span>
-                </DialogTitle>
-                <DialogDescription className="text-xs text-muted-foreground">
-                  Complete decision matrix, outcome variables, and multi-agent routing schema.
-                </DialogDescription>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium border ${isActive ? "bg-emerald-500/10 text-emerald-600 border-emerald-500/20" : "bg-muted text-muted-foreground border-border"}`}>
-                  <span className={`size-1.5 rounded-full mr-1.5 ${isActive ? "bg-emerald-500" : "bg-muted-foreground"}`} />
-                  {isActive ? "Active" : "Inactive"}
-                </span>
-                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-mono font-medium bg-muted text-foreground border border-border">
-                  {rules.length} {rules.length === 1 ? "rule" : "rules"}
-                </span>
-              </div>
-            </div>
-          </div>
-
-          {(() => {
-            const formattedJsonObj = {
-              name,
-              is_active: isActive,
-              total_rules: rules.length,
-              available_agents: availableAgents.map((a) => ({
-                agent_id: a.id,
-                agent_name: a.name,
-              })),
-              rules: rules.map((r, idx) => {
-                const matchedAgent = r.agent_id
-                  ? availableAgents.find((a) => a.id === r.agent_id)
-                  : null;
-                const agentId = r.action === "stop_calling" ? null : (r.agent_id || null);
-                const agentName = r.action === "stop_calling"
-                  ? null
-                  : (matchedAgent?.name || r.agent_name || null);
-
-                return {
-                  id: r.id || `rule_${idx + 1}`,
-                  action: r.action,
-                  retries: r.action === "stop_calling" ? 0 : (r.retries ?? 0),
-                  agent_id: agentId,
-                  agent_name: agentName,
-                  variables: r.variables,
-                };
-              }),
-            };
-            const jsonText = JSON.stringify(formattedJsonObj, null, 2);
-            const lines = jsonText.split("\n");
-            const byteSize = new Blob([jsonText]).size;
-
-            function highlightSyntax(raw: string) {
-              const regex = /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g;
-              return raw.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(regex, (match) => {
-                let cls = "text-amber-400"; // number
-                if (/^"/.test(match)) {
-                  if (/:$/.test(match)) {
-                    cls = "text-sky-300 font-semibold"; // key
-                  } else {
-                    cls = "text-emerald-300"; // string value
-                  }
-                } else if (/true|false/.test(match)) {
-                  cls = "text-purple-300 font-medium"; // boolean
-                } else if (/null/.test(match)) {
-                  cls = "text-rose-300/80 italic"; // null
-                }
-                return `<span class="${cls}">${match}</span>`;
-              });
-            }
-
-            function handleDownload() {
-              const filename = `${name.toLowerCase().replace(/[^a-z0-9]/g, "_") || "workflow"}_config.json`;
-              const blob = new Blob([jsonText], { type: "application/json" });
-              const url = URL.createObjectURL(blob);
-              const a = document.createElement("a");
-              a.href = url;
-              a.download = filename;
-              document.body.appendChild(a);
-              a.click();
-              document.body.removeChild(a);
-              URL.revokeObjectURL(url);
-              toast.success(`Downloaded ${filename}`);
-            }
-
-            return (
-              <div className="p-6 space-y-4">
-                {/* Code Window Container */}
-                <div className="rounded-xl border border-neutral-800 bg-[#0d1117] text-neutral-100 shadow-xl overflow-hidden">
-                  {/* Window Bar */}
-                  <div className="flex items-center justify-between px-4 py-2.5 bg-[#161b22] border-b border-neutral-800/90 text-xs">
-                    <div className="flex items-center gap-2">
-                      <div className="flex items-center gap-1.5">
-                        <div className="size-2.5 rounded-full bg-rose-500/80" />
-                        <div className="size-2.5 rounded-full bg-amber-500/80" />
-                        <div className="size-2.5 rounded-full bg-emerald-500/80" />
-                      </div>
-                      <span className="text-neutral-400 font-mono text-[11px] ml-2 flex items-center gap-1.5">
-                        <Code2Icon className="size-3 text-neutral-500" />
-                        workflow_config.json
-                      </span>
-                    </div>
-
-                    <div className="flex items-center gap-3 text-neutral-400 font-mono text-[11px]">
-                      <span>{lines.length} lines</span>
-                      <span>•</span>
-                      <span>{(byteSize / 1024).toFixed(1)} KB</span>
-                    </div>
-                  </div>
-
-                  {/* Code Editor Body with Line Numbers */}
-                  <div className="p-4 font-mono text-xs overflow-auto max-h-[460px] leading-relaxed select-text">
-                    <table className="w-full border-collapse">
-                      <tbody>
-                        {lines.map((line, idx) => (
-                          <tr key={idx} className="hover:bg-white/[0.03] transition-colors">
-                            <td className="w-10 pr-4 text-right select-none text-neutral-600 font-mono text-[11px] align-top">
-                              {idx + 1}
-                            </td>
-                            <td className="text-neutral-100 font-mono text-xs whitespace-pre align-top">
-                              <span
-                                dangerouslySetInnerHTML={{
-                                  __html: highlightSyntax(line),
-                                }}
-                              />
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-
-                {/* Footer Controls */}
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
-                  <p className="text-[11px] text-muted-foreground">
-                    This payload contains all live variables, multi-agent routing rules, and retry policies.
-                  </p>
-
-                  <div className="flex items-center gap-2 self-end sm:self-auto">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={handleDownload}
-                      className="h-8 text-xs gap-1.5 shadow-xs"
-                    >
-                      <DownloadIcon className="size-3.5 text-muted-foreground" />
-                      Download JSON
-                    </Button>
-
-                    <Button
-                      type="button"
-                      variant="default"
-                      size="sm"
-                      onClick={() => {
-                        navigator.clipboard.writeText(jsonText);
-                        toast.success("JSON copied to clipboard");
-                      }}
-                      className="h-8 text-xs gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs"
-                    >
-                      <CopyIcon className="size-3.5" />
-                      Copy JSON
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            );
-          })()}
-        </DialogContent>
-      </Dialog>
+      <WorkflowConfigDialog
+        open={jsonOpen}
+        onOpenChange={setJsonOpen}
+        name={name}
+        isActive={isActive}
+        rules={rules}
+        availableAgents={availableAgents}
+        workflowId={workflow.id}
+      />
 
       {/* Delete Confirmation Dialog */}
       <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>

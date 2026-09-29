@@ -418,19 +418,18 @@ export async function dispatchDueCampaignContacts(): Promise<DispatchResult> {
   const queue: DueContact[] = [];
   for (const c of data ?? []) {
     if (!c.campaign || c.campaign.status !== "in_progress") continue;
-    // For workflow-driven campaigns or scheduled retries, allow workflow-scheduled retries.
-    const hasActiveNextAttempt = !!c.next_attempt_at;
-    const maxAllowedAttempts =
-      c.campaign.workflow_id || hasActiveNextAttempt
-        ? Math.max(c.campaign.max_attempts, 10) + c.callback_count
-        : c.campaign.max_attempts + c.callback_count;
+    // For workflow-driven campaigns, allow workflow-scheduled retries up to workflow rules / 10.
+    // For non-workflow campaigns, strictly enforce c.campaign.max_attempts and c.campaign.max_connected_attempts.
+    const isWorkflow = !!c.campaign.workflow_id;
+    const maxAllowedAttempts = isWorkflow
+      ? Math.max(c.campaign.max_attempts, 10) + c.callback_count
+      : c.campaign.max_attempts + c.callback_count;
 
     if (c.attempt >= maxAllowedAttempts) continue;
 
-    const maxConnected =
-      c.campaign.workflow_id || hasActiveNextAttempt
-        ? Math.max(c.campaign.max_attempts, c.campaign.max_connected_attempts ?? 1, 10)
-        : (c.campaign.max_connected_attempts ?? 1);
+    const maxConnected = isWorkflow
+      ? Math.max(c.campaign.max_attempts, c.campaign.max_connected_attempts ?? 1, 10)
+      : (c.campaign.max_connected_attempts ?? 1);
 
     if ((c.connected_count ?? 0) >= maxConnected) continue;
     const used = perCampaign.get(c.campaign_id) ?? 0;

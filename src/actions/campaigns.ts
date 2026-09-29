@@ -163,14 +163,28 @@ export async function createCampaign(
   const isRunNow = parsed.data.schedule_mode === "now";
   const scheduledAt = isRunNow ? null : parsed.data.scheduled_at!;
 
+  const configuredMaxRetries = parsed.data.max_attempts - 1;
+  if (
+    parsed.data.max_connected_attempts !== undefined &&
+    parsed.data.max_connected_attempts !== null &&
+    parsed.data.max_connected_attempts > configuredMaxRetries
+  ) {
+    return fail("Max Retries should always be greater than or equal to Max connected attempts.");
+  }
+
+  let workflowId: string | null =
+    parsed.data.workflow_id && parsed.data.workflow_id !== "none"
+      ? parsed.data.workflow_id
+      : null;
   let workflowName: string | null = parsed.data.workflow_name ?? null;
+
   let maxWfRetries = 0;
-  if (parsed.data.workflow_id) {
+  if (workflowId) {
     try {
       const { data: wf } = await admin
         .from("workflows")
         .select("name, rules")
-        .eq("id", parsed.data.workflow_id)
+        .eq("id", workflowId)
         .maybeSingle<{ name: string; rules: Array<{ action?: string; retries?: number }> }>();
       if (wf?.name && !workflowName) workflowName = wf.name;
       if (wf?.rules && Array.isArray(wf.rules)) {
@@ -203,7 +217,7 @@ export async function createCampaign(
     agent_id: parsed.data.agent_id,
     from_phone_number: parsed.data.from_phone_number,
     from_phone_numbers: pool,
-    workflow_id: parsed.data.workflow_id ?? null,
+    workflow_id: workflowId,
     workflow_name: workflowName,
     status: isRunNow ? "in_progress" : "scheduled",
     scheduled_at: scheduledAt,
@@ -916,6 +930,7 @@ export interface CampaignStats {
   contactStateCounts: Record<ContactState, number>;
   contacts: ContactRow[];
   contactsOverflow: number; // contacts not in the capped list above
+  campaignId: string;
 }
 
 // Where a single contact sits in the dial lifecycle, with the actionable
@@ -929,14 +944,36 @@ export type ContactState =
   | "retry" // pending — waiting on the retry interval after a no-answer/busy
   | "queued"; // pending — never dialed yet
 
+export interface ContactCallHistoryItem {
+  id: string;
+  attemptNumber: number;
+  status: CallStatus | string;
+  outcome: string | null;
+  durationSeconds: number | null;
+  startedAt: string;
+  endedAt: string | null;
+  createdAt: string;
+  agentId: string | null;
+  agentName: string | null;
+  recordingUrl: string | null;
+  summary: string | null;
+  errorMessage: string | null;
+  fromPhone: string | null;
+  toPhone: string | null;
+  isTest: boolean;
+}
+
 export interface ContactRow {
   id: string;
+  campaignId: string;
   name: string | null;
   phone: string;
   state: ContactState;
   detail: string; // short human reason, no timestamp
   attempt: number;
   maxAttempts: number;
+  connectedCount?: number;
+  maxConnectedAttempts?: number;
   nextAttemptAt: string | null; // ISO (drives sort)
   // Compact "in 24m" / "in 2h" / "in 6d" label, computed at fetch time so the
   // render stays pure. Null unless the contact is waiting for a next dial.
@@ -946,6 +983,7 @@ export interface ContactRow {
   isRetry: boolean;
   retryAgentId: string | null;
   retryAgentName: string | null;
+  history: ContactCallHistoryItem[];
 }
 
 // Compact, timezone-agnostic "how long until" label.
@@ -1057,10 +1095,10 @@ export async function getCampaignStats(
   if (!user) return fail("Not authenticated");
 
   const admin = createAdminClient();
-  const { data: campaign } = await admin
+  let { data: campaign, error: campaignErr } = await admin
     .from("campaigns")
     .select(
-      "id, organisation_id, agent_id, max_attempts, switch_connect_rate_floor, switch_window_minutes, switch_min_samples",
+      "id, organisation_id, agent_id, max_attempts, max_connected_attempts, switch_connect_rate_floor, switch_window_minutes, switch_min_samples",
     )
     .eq("id", parsed.data.id)
     .maybeSingle<{
@@ -1068,10 +1106,36 @@ export async function getCampaignStats(
       organisation_id: string;
       agent_id: string | null;
       max_attempts: number;
+      max_connected_attempts?: number;
       switch_connect_rate_floor: number;
       switch_window_minutes: number;
       switch_min_samples: number;
     }>();
+
+  if (
+    campaignErr &&
+    (campaignErr.message.includes("max_connected_attempts") ||
+      campaignErr.message.includes("does not exist"))
+  ) {
+    const fallbackRes = await admin
+      .from("campaigns")
+      .select(
+        "id, organisation_id, agent_id, max_attempts, switch_connect_rate_floor, switch_window_minutes, switch_min_samples",
+      )
+      .eq("id", parsed.data.id)
+      .maybeSingle<{
+        id: string;
+        organisation_id: string;
+        agent_id: string | null;
+        max_attempts: number;
+        switch_connect_rate_floor: number;
+        switch_window_minutes: number;
+        switch_min_samples: number;
+      }>();
+    campaign = fallbackRes.data
+      ? { ...fallbackRes.data, max_connected_attempts: 1 }
+      : null;
+  }
   if (!campaign) return fail("Campaign not found");
   if (!(await userOwnsOrg(supabase, user.id, campaign.organisation_id))) {
     return fail("Forbidden");
@@ -1130,7 +1194,7 @@ export async function getCampaignStats(
   const { data: contacts, error: cErr } = await admin
     .from("campaign_contacts")
     .select(
-      "id, name, phone, status, attempt, last_status, last_outcome, last_error, next_attempt_at, health_defer_count, callback_count, metadata",
+      "id, name, phone, status, attempt, connected_count, last_status, last_outcome, last_error, next_attempt_at, health_defer_count, callback_count, metadata",
     )
     .eq("campaign_id", campaign.id)
     .returns<
@@ -1140,6 +1204,7 @@ export async function getCampaignStats(
         phone: string;
         status: string;
         attempt: number;
+        connected_count?: number;
         last_status: string | null;
         last_outcome: string | null;
         last_error: string | null;
@@ -1150,6 +1215,51 @@ export async function getCampaignStats(
       }>
     >();
   if (cErr) return fail(cErr.message);
+
+  const ids = (contacts ?? []).map((c) => c.id);
+
+  // Calls for this campaign (every dial made to contacts in this campaign).
+  type CallRecord = {
+    id: string;
+    campaign_contact_id: string | null;
+    to_phone: string | null;
+    from_phone: string | null;
+    agent_id: string;
+    status: CallStatus;
+    direction: CallDirection;
+    call_outcome: string | null;
+    duration_seconds: number | null;
+    recording_url: string | null;
+    summary: string | null;
+    error_message: string | null;
+    started_at: string;
+    ended_at: string | null;
+    created_at: string;
+    is_test: boolean | null;
+  };
+
+  const { data: campaignCallsResult } = ids.length > 0
+    ? await admin
+        .from("calls")
+        .select(
+          "id, campaign_contact_id, to_phone, from_phone, agent_id, status, direction, call_outcome, duration_seconds, recording_url, summary, error_message, started_at, ended_at, created_at, is_test",
+        )
+        .in("campaign_contact_id", ids)
+    : { data: [] };
+
+  const allCallsMap = new Map<string, CallRecord>();
+  for (const call of (campaignCallsResult as CallRecord[] | null) ?? []) {
+    if (call?.id) allCallsMap.set(call.id, call);
+  }
+
+  // Clean up any test history rows from previous test runs so they do not show in contact history
+  if (ids.length > 0) {
+    await admin
+      .from("calls")
+      .delete()
+      .in("campaign_contact_id", ids)
+      .or("call_outcome.eq.test_history_verified,is_test.eq.true");
+  }
 
   const totalContacts = contacts?.length ?? 0;
   let attemptedContacts = 0;
@@ -1195,14 +1305,53 @@ export async function getCampaignStats(
     const isWaiting = WAITING_STATES.has(state);
     const willRetry = isWaiting && !!c.next_attempt_at;
 
+    // Filter calls strictly by campaign_contact_id so history is per-campaign, not contact number wise
+    const contactCalls = Array.from(allCallsMap.values()).filter((call) => {
+      if (call.is_test || call.call_outcome === "test_history_verified") return false;
+      return call.campaign_contact_id === c.id;
+    });
+
+    contactCalls.sort((a, b) => {
+      const tA = new Date(a.started_at || a.created_at).getTime();
+      const tB = new Date(b.started_at || b.created_at).getTime();
+      return tA - tB;
+    });
+
+    const history: ContactCallHistoryItem[] = contactCalls.map((call, idx) => {
+      const agentName = call.agent_id
+        ? agentNameMap.get(call.agent_id) || (call.agent_id === defaultAgentId ? defaultAgentLabel : call.agent_id)
+        : defaultAgentLabel;
+      return {
+        id: call.id,
+        attemptNumber: idx + 1,
+        status: call.status,
+        outcome: call.call_outcome ?? null,
+        durationSeconds: call.duration_seconds ?? null,
+        startedAt: call.started_at || call.created_at,
+        endedAt: call.ended_at ?? null,
+        createdAt: call.created_at,
+        agentId: call.agent_id ?? null,
+        agentName: agentName ?? null,
+        recordingUrl: call.recording_url ?? null,
+        summary: call.summary ?? null,
+        errorMessage: call.error_message ?? null,
+        fromPhone: call.from_phone ?? null,
+        toPhone: call.to_phone ?? null,
+        isTest: Boolean(call.is_test),
+      };
+    });
+
     allContactRows.push({
       id: c.id,
+      campaignId: campaign.id,
       name: c.name,
       phone: c.phone,
       state,
       detail,
       attempt: c.attempt,
       maxAttempts: campaign.max_attempts,
+      connectedCount: c.connected_count ?? 0,
+      maxConnectedAttempts: campaign.max_connected_attempts ?? 1,
       nextAttemptAt: c.next_attempt_at,
       nextAttemptLabel: isWaiting ? formatUntil(c.next_attempt_at, nowMs) : null,
       nextAttemptFormatted: isWaiting && c.next_attempt_at ? formatDateTimeShort(c.next_attempt_at) : null,
@@ -1210,6 +1359,7 @@ export async function getCampaignStats(
       isRetry: isWaiting && (c.attempt > 0 || c.health_defer_count > 0 || c.callback_count > 0),
       retryAgentId: effectiveAgentId,
       retryAgentName: effectiveAgentName,
+      history,
     });
   }
   // Most-actionable first (deferred → callback → retry → …), then cap.
@@ -1222,26 +1372,10 @@ export async function getCampaignStats(
   const contactRows = allContactRows.slice(0, CONTACT_LIST_CAP);
   const contactsOverflow = Math.max(0, totalContacts - contactRows.length);
 
-  // Calls (every dial). Bounded by attempts × contacts; fine to pull for
-  // aggregation. Exclude test rows defensively (campaign calls never are).
-  const ids = (contacts ?? []).map((c) => c.id);
-  const calls = ids.length
-    ? (
-        await admin
-          .from("calls")
-          .select("status, duration_seconds, started_at, from_phone")
-          .in("campaign_contact_id", ids)
-          .eq("is_test", false)
-          .returns<
-            Array<{
-              status: CallStatus;
-              duration_seconds: number | null;
-              started_at: string;
-              from_phone: string | null;
-            }>
-          >()
-      ).data ?? []
-    : [];
+  // Calls for aggregate campaign metrics: real campaign dials (not test simulations)
+  const calls = Array.from(allCallsMap.values()).filter(
+    (call) => !call.is_test && Boolean(call.campaign_contact_id),
+  );
 
   const outcomeCounts = new Map<CallStatus, number>();
   const perDay = new Map<string, number>();
@@ -1332,6 +1466,7 @@ export async function getCampaignStats(
   const degraded = judged.length > 0 && judged.every((n) => n.isResting);
 
   return ok({
+    campaignId: campaign.id,
     totalContacts,
     attemptedContacts,
     connectedContacts,

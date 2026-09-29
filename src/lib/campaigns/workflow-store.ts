@@ -12,43 +12,22 @@ export async function getWorkflowRulesForOrg(
   organisationId: string,
   workflowId?: string | null,
 ): Promise<OutcomeRule[] | null> {
+  if (!workflowId) {
+    return null;
+  }
+
   const admin = createAdminClient();
 
-  if (workflowId) {
-    const mem = workflowStore.get(workflowId);
-    if (mem?.rules && mem.rules.length > 0) {
-      return mem.rules;
-    }
-
-    try {
-      const { data: wf } = await admin
-        .from("workflows")
-        .select("rules")
-        .eq("id", workflowId)
-        .maybeSingle<{ rules: OutcomeRule[] }>();
-      if (wf?.rules && Array.isArray(wf.rules) && wf.rules.length > 0) {
-        return wf.rules;
-      }
-    } catch {
-      // ignore
-    }
+  const mem = workflowStore.get(workflowId);
+  if (mem?.rules && mem.rules.length > 0) {
+    return mem.rules;
   }
 
-  // Fallback: check in-memory store for org
-  for (const wf of workflowStore.values()) {
-    if (wf.organisation_id === organisationId && wf.rules && wf.rules.length > 0) {
-      return wf.rules;
-    }
-  }
-
-  // Fallback: query database for org's latest workflow
   try {
     const { data: wf } = await admin
       .from("workflows")
       .select("rules")
-      .eq("organisation_id", organisationId)
-      .order("created_at", { ascending: false })
-      .limit(1)
+      .eq("id", workflowId)
       .maybeSingle<{ rules: OutcomeRule[] }>();
     if (wf?.rules && Array.isArray(wf.rules) && wf.rules.length > 0) {
       return wf.rules;

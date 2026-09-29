@@ -328,6 +328,114 @@ describe("decideOutcome — technical tier", () => {
   });
 });
 
+describe("decideOutcome — non-workflow campaigns (Max Retries: 3, Max Connected Attempts: 2)", () => {
+  const NON_WF_CAMPAIGN = {
+    max_attempts: 4, // 3 retries + 1 initial attempt = 4 attempts
+    max_connected_attempts: 2, // Up to 2 connected calls
+    max_callbacks: 2,
+    retry_interval_seconds: INTERVAL,
+    retry_on: ["no_answer", "busy", "failed", "canceled"] as CampaignRetryTrigger[],
+  };
+
+  it("re-arms on technical failures (no_answer) while attempt < max_attempts", () => {
+    // Attempt 1: fails
+    const d1 = decideOutcome(
+      make({
+        callStatus: "no_answer",
+        attempt: 1,
+        connectedCount: 0,
+        campaign: NON_WF_CAMPAIGN,
+        workflowRules: null,
+      }),
+    );
+    expect(d1.kind).toBe("rearm");
+
+    // Attempt 2: fails
+    const d2 = decideOutcome(
+      make({
+        callStatus: "no_answer",
+        attempt: 2,
+        connectedCount: 0,
+        campaign: NON_WF_CAMPAIGN,
+        workflowRules: null,
+      }),
+    );
+    expect(d2.kind).toBe("rearm");
+
+    // Attempt 3: fails
+    const d3 = decideOutcome(
+      make({
+        callStatus: "no_answer",
+        attempt: 3,
+        connectedCount: 0,
+        campaign: NON_WF_CAMPAIGN,
+        workflowRules: null,
+      }),
+    );
+    expect(d3.kind).toBe("rearm");
+
+    // Attempt 4: cap hit (3 retries exhausted)
+    const d4 = decideOutcome(
+      make({
+        callStatus: "no_answer",
+        attempt: 4,
+        connectedCount: 0,
+        campaign: NON_WF_CAMPAIGN,
+        workflowRules: null,
+      }),
+    );
+    expect(d4.kind).toBe("fail");
+  });
+
+  it("enforces max_connected_attempts on completed calls and callbacks", () => {
+    // 1st connected call with callback_requested: under cap (1 < 2), re-arms for callback
+    const d1 = decideOutcome(
+      make({
+        callStatus: "completed",
+        callOutcome: "callback_requested",
+        attempt: 1,
+        connectedCount: 0,
+        callbackCount: 0,
+        campaign: NON_WF_CAMPAIGN,
+        workflowRules: null,
+      }),
+    );
+    expect(d1.kind).toBe("rearm");
+
+    // 2nd connected call with callback_requested: cap reached (2 >= 2), succeeds without re-arming
+    const d2 = decideOutcome(
+      make({
+        callStatus: "completed",
+        callOutcome: "callback_requested",
+        attempt: 2,
+        connectedCount: 1,
+        callbackCount: 1,
+        campaign: NON_WF_CAMPAIGN,
+        workflowRules: null,
+      }),
+    );
+    expect(d2.kind).toBe("succeed");
+  });
+
+  it("stops dialing technical calls if max_connected_attempts is already reached", () => {
+    // Contact already had 2 connected calls, now encounters a busy signal:
+    // connectedCount (2) >= max_connected_attempts (2) -> stops dialing immediately
+    const d = decideOutcome(
+      make({
+        callStatus: "busy",
+        attempt: 2,
+        connectedCount: 2,
+        campaign: NON_WF_CAMPAIGN,
+        workflowRules: null,
+      }),
+    );
+    expect(d.kind).toBe("fail");
+    if (d.kind === "fail") {
+      expect(d.patch.last_error).toBe("Max connected attempts reached (2)");
+    }
+  });
+});
+
 describe("decideOutcome — workflow rules matrix", () => {
   const rules: OutcomeRule[] = [
     {

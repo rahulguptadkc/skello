@@ -86,6 +86,7 @@ export interface CampaignContact {
   metadata: Record<string, unknown>;
   status: CampaignContactStatus;
   attempt: number;
+  connected_count?: number;
   // Honored callbacks so far — a budget separate from `attempt`.
   callback_count: number;
   // Consecutive all-numbers-resting deferrals (drives the backoff → least-bad
