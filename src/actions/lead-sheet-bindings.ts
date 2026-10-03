@@ -31,9 +31,9 @@ export async function listLeadSheetBindings(): Promise<
   ActionResult<LeadSheetBinding[]>
 > {
   const session = await requireSession();
-  const supabase = await createClient();
+  const admin = createAdminClient();
 
-  const { data, error } = await supabase
+  const { data, error } = await admin
     .from("lead_sheet_bindings")
     .select(COLUMNS)
     .eq("organisation_id", session.organisation.id)

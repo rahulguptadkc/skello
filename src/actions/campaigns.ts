@@ -18,6 +18,7 @@ import {
 } from "@/lib/validations/campaign";
 import { pickBestOutcome } from "@/lib/campaigns/best-disposition";
 import { loadOutcomeRanking } from "@/lib/queries/outcome-ranking";
+import { userCanAccessOrg } from "@/lib/auth/org-access";
 import { type ActionResult, fail, ok } from "@/types/action";
 import type { CallStatus, CallDirection } from "@/types/call";
 import type {
@@ -55,17 +56,12 @@ async function requireUser() {
 }
 
 async function userOwnsOrg(
-  supabase: SupabaseServerClient,
+  _supabase: SupabaseServerClient | null,
   userId: string,
   organisationId: string,
+  userEmail?: string,
 ): Promise<boolean> {
-  const { data } = await supabase
-    .from("organisations")
-    .select("id")
-    .eq("id", organisationId)
-    .eq("owner_id", userId)
-    .maybeSingle<{ id: string }>();
-  return !!data;
+  return userCanAccessOrg(userId, organisationId, userEmail);
 }
 
 export async function createCampaign(
@@ -78,7 +74,7 @@ export async function createCampaign(
 
   const { supabase, user } = await requireUser();
   if (!user) return fail("Not authenticated");
-  if (!(await userOwnsOrg(supabase, user.id, parsed.data.organisation_id))) {
+  if (!(await userOwnsOrg(supabase, user.id, parsed.data.organisation_id, user.email))) {
     return fail("Forbidden");
   }
 
@@ -350,7 +346,7 @@ export async function runCampaignNow(
     .eq("id", parsed.data.id)
     .maybeSingle<{ id: string; organisation_id: string; status: string }>();
   if (!existing) return fail("Campaign not found");
-  if (!(await userOwnsOrg(supabase, user.id, existing.organisation_id))) {
+  if (!(await userOwnsOrg(supabase, user.id, existing.organisation_id, user.email))) {
     return fail("Forbidden");
   }
   if (existing.status === "in_progress") return fail("Campaign is already running");
@@ -467,7 +463,7 @@ export async function stopCampaign(
     .eq("id", parsed.data.id)
     .maybeSingle<{ id: string; organisation_id: string }>();
   if (!existing) return fail("Campaign not found");
-  if (!(await userOwnsOrg(supabase, user.id, existing.organisation_id))) {
+  if (!(await userOwnsOrg(supabase, user.id, existing.organisation_id, user.email))) {
     return fail("Forbidden");
   }
 
@@ -544,7 +540,7 @@ export async function deleteCampaign(
     }>();
   // A row that's already soft-deleted reads as "not found" to the org.
   if (!existing || existing.deleted_at) return fail("Campaign not found");
-  if (!(await userOwnsOrg(supabase, user.id, existing.organisation_id))) {
+  if (!(await userOwnsOrg(supabase, user.id, existing.organisation_id, user.email))) {
     return fail("Forbidden");
   }
 

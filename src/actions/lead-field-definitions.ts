@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 
-import { requireUser, userCanManageOrg } from "@/lib/auth/org-access";
+import { requireUser, userCanAccessOrg, userCanManageOrg } from "@/lib/auth/org-access";
 import { createAdminClient } from "@/lib/supabase/admin";
 import {
   deleteLeadFieldDefinitionSchema,
@@ -25,9 +25,9 @@ export async function listLeadFieldDefinitions(
     return fail(parsed.error.issues[0]?.message ?? "Invalid input");
   }
 
-  const { supabase, user } = await requireUser();
+  const { user } = await requireUser();
   if (!user) return fail("Not authenticated");
-  if (!(await userCanManageOrg(supabase, user.id, parsed.data.organisation_id))) {
+  if (!(await userCanAccessOrg(user.id, parsed.data.organisation_id, user.email))) {
     return fail("Forbidden");
   }
 

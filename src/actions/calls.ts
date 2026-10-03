@@ -11,6 +11,7 @@ import { loadOutcomeRanking } from "@/lib/queries/outcome-ranking";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
+import { getOrgForUser, userCanAccessOrg } from "@/lib/auth/org-access";
 import { callInitiateSchema, callListSchema } from "@/lib/validations/call";
 import { type ActionResult, fail, ok } from "@/types/action";
 import type { Call, CallStatus, CallWithLead } from "@/types/call";
@@ -55,17 +56,12 @@ async function requireUser() {
 }
 
 async function userOwnsOrg(
-  supabase: SupabaseServerClient,
+  _supabase: SupabaseServerClient | null,
   userId: string,
   organisationId: string,
+  userEmail?: string,
 ): Promise<boolean> {
-  const { data } = await supabase
-    .from("organisations")
-    .select("id")
-    .eq("id", organisationId)
-    .eq("owner_id", userId)
-    .maybeSingle<{ id: string }>();
-  return !!data;
+  return userCanAccessOrg(userId, organisationId, userEmail);
 }
 
 export async function initiateCall(
@@ -76,10 +72,11 @@ export async function initiateCall(
     return fail(parsed.error.issues[0]?.message ?? "Invalid input");
   }
 
-  const { supabase, user } = await requireUser();
+  const { user } = await requireUser();
   if (!user) return fail("Not authenticated");
 
-  const { data: lead, error: leadErr } = await supabase
+  const admin = createAdminClient();
+  const { data: lead, error: leadErr } = await admin
     .from("leads")
     .select("id, org_slug, phone, name")
     .eq("id", parsed.data.lead_id)
@@ -94,15 +91,9 @@ export async function initiateCall(
   if (!lead || !lead.org_slug) return fail("Lead not found");
   if (!lead.phone) return fail("No phone on file");
 
-  const { data: org } = await supabase
-    .from("organisations")
-    .select("id, slug")
-    .eq("slug", lead.org_slug)
-    .eq("owner_id", user.id)
-    .maybeSingle<{ id: string; slug: string }>();
+  const org = await getOrgForUser(user.id, { slug: lead.org_slug }, user.email);
   if (!org) return fail("Forbidden");
 
-  const admin = createAdminClient();
   const { data: integration, error: intErr } = await admin
     .from("bolna_integrations")
     .select("agent_id, api_key, from_phone_number, enabled")
@@ -228,7 +219,7 @@ export async function initiateTestCall(
 
   const { supabase, user } = await requireUser();
   if (!user) return fail("Not authenticated");
-  if (!(await userOwnsOrg(supabase, user.id, parsed.data.organisation_id))) {
+  if (!(await userOwnsOrg(supabase, user.id, parsed.data.organisation_id, user.email))) {
     return fail("Forbidden");
   }
 
@@ -378,12 +369,13 @@ export async function listCalls(
 
   const { supabase, user } = await requireUser();
   if (!user) return fail("Not authenticated");
-  if (!(await userOwnsOrg(supabase, user.id, parsed.data.organisation_id))) {
+  if (!(await userOwnsOrg(supabase, user.id, parsed.data.organisation_id, user.email))) {
     return fail("Forbidden");
   }
 
+  const admin = createAdminClient();
   const ascending = parsed.data.dir === "asc";
-  let query = supabase
+  let query = admin
     .from("calls")
     .select(CALL_COLUMNS, { count: "exact" })
     .eq("organisation_id", parsed.data.organisation_id)
@@ -412,9 +404,11 @@ export async function listConversations(
 
   const { supabase, user } = await requireUser();
   if (!user) return fail("Not authenticated");
-  if (!(await userOwnsOrg(supabase, user.id, parsed.data.organisation_id))) {
+  if (!(await userOwnsOrg(supabase, user.id, parsed.data.organisation_id, user.email))) {
     return fail("Forbidden");
   }
+
+  const admin = createAdminClient();
 
   // Campaign scoping: resolve the campaign's contact ids and constrain the
   // call query to those. Done here (not in the generic filter helper) so the
@@ -422,7 +416,7 @@ export async function listConversations(
   let campaignContactIds: string[] | undefined;
   if (parsed.data.campaign_id) {
     const ids = await resolveCampaignContactIds(
-      supabase,
+      admin,
       parsed.data.organisation_id,
       parsed.data.campaign_id,
     );
@@ -433,7 +427,7 @@ export async function listConversations(
   const ascending = parsed.data.dir === "asc";
   // campaign_contact_id rides along so the campaign Calls tab can show each
   // contact's best disposition across attempts; it's harmless on other lists.
-  let query = supabase
+  let query = admin
     .from("calls")
     .select(
       // The lead embed carries status + intent so a call's detail can show who
@@ -465,7 +459,7 @@ export async function listConversations(
 
   if (missingContactIds.length > 0) {
     const uniqueIds = Array.from(new Set(missingContactIds));
-    const { data: contacts } = await supabase
+    const { data: contacts } = await admin
       .from("campaign_contacts")
       .select("id, name, phone")
       .in("id", uniqueIds);
@@ -505,7 +499,7 @@ export async function listConversations(
       ),
     );
     if (phones.length > 0) {
-      const { data: leads } = await supabase
+      const { data: leads } = await admin
         .from("leads")
         .select("name, phone, status, current_intent")
         .in("phone", phones);
@@ -560,7 +554,7 @@ export async function listConversations(
   // a contact's attempts); skip the extra round-trips elsewhere.
   const items = parsed.data.campaign_id
     ? await attachBestDispositions(
-        supabase,
+        admin,
         parsed.data.organisation_id,
         rows,
       )
@@ -578,7 +572,7 @@ type CallRowWithContact = CallWithLead & {
 // For each call row, attach `best_outcome` — the highest-priority disposition
 // its campaign contact reached across ALL its attempts (not just this call).
 async function attachBestDispositions(
-  supabase: SupabaseServerClient,
+  admin: ReturnType<typeof createAdminClient>,
   organisationId: string,
   rows: CallRowWithContact[],
 ): Promise<CallRowWithContact[]> {
@@ -591,7 +585,7 @@ async function attachBestDispositions(
   ];
   if (contactIds.length === 0) return rows;
 
-  const ranking = await loadOutcomeRanking(supabase, organisationId);
+  const ranking = await loadOutcomeRanking(admin, organisationId);
   if (ranking.size === 0) return rows;
 
   const CHUNK_SIZE = 500;
@@ -599,7 +593,7 @@ async function attachBestDispositions(
 
   for (let i = 0; i < contactIds.length; i += CHUNK_SIZE) {
     const chunk = contactIds.slice(i, i + CHUNK_SIZE);
-    const { data } = await supabase
+    const { data } = await admin
       .from("calls")
       .select("campaign_contact_id, call_outcome")
       .in("campaign_contact_id", chunk)
@@ -634,11 +628,11 @@ async function attachBestDispositions(
 // org. Returns null if the campaign doesn't exist (or is cross-tenant), or a
 // (possibly empty) id array otherwise.
 async function resolveCampaignContactIds(
-  supabase: SupabaseServerClient,
+  admin: ReturnType<typeof createAdminClient>,
   organisationId: string,
   campaignId: string,
 ): Promise<string[] | null> {
-  const { data: campaign } = await supabase
+  const { data: campaign } = await admin
     .from("campaigns")
     .select("id")
     .eq("id", campaignId)
@@ -646,7 +640,7 @@ async function resolveCampaignContactIds(
     .maybeSingle<{ id: string }>();
   if (!campaign) return null;
 
-  const { data: contacts } = await supabase
+  const { data: contacts } = await admin
     .from("campaign_contacts")
     .select("id")
     .eq("campaign_id", campaignId)
@@ -666,14 +660,15 @@ export async function listConversationAgents(
 
   const { supabase, user } = await requireUser();
   if (!user) return fail("Not authenticated");
-  if (!(await userOwnsOrg(supabase, user.id, organisationId))) {
+  if (!(await userOwnsOrg(supabase, user.id, organisationId, user.email))) {
     return fail("Forbidden");
   }
 
+  const admin = createAdminClient();
   // Recently active agents from the calls table — drives which agents appear
   // in the filter. We pull the latest 500 rows and dedupe; an org with more
   // than ~500 active agents in the recent window is not realistic.
-  const { data: callRows, error: callsErr } = await supabase
+  const { data: callRows, error: callsErr } = await admin
     .from("calls")
     .select("agent_id")
     .eq("organisation_id", organisationId)
@@ -689,7 +684,7 @@ export async function listConversationAgents(
 
   // Resolve human-readable labels from voice_agents. Org-scoped read so we
   // never leak another tenant's label even if an agent_id collided.
-  const { data: agentRows, error: agentsErr } = await supabase
+  const { data: agentRows, error: agentsErr } = await admin
     .from("voice_agents")
     .select("agent_id, label")
     .eq("organisation_id", organisationId)

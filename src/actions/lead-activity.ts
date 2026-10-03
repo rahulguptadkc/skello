@@ -3,7 +3,8 @@
 import { z } from "zod";
 
 import { logSkeloError } from "@/lib/errors";
-import { createClient } from "@/lib/supabase/server";
+import { requireUser, getOrgForUser } from "@/lib/auth/org-access";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { orgSlugSchema } from "@/lib/validations/lead";
 import {
   leadActivityFilterSchema as filterSchema,
@@ -165,22 +166,15 @@ export async function listLeadsWithCallActivity(
   }
   const { org_slug, include_zero_calls, limit, offset, filters, sort_by, search } = parsed.data;
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const { user } = await requireUser();
   if (!user) return fail("Not authenticated");
 
-  const { data: org } = await supabase
-    .from("organisations")
-    .select("id, slug")
-    .eq("slug", org_slug)
-    .eq("owner_id", user.id)
-    .maybeSingle<{ id: string; slug: string }>();
+  const org = await getOrgForUser(user.id, { slug: org_slug }, user.email);
   if (!org) return fail("Forbidden");
 
+  const admin = createAdminClient();
   const [itemsRes, countRes] = await Promise.all([
-    supabase.rpc("lead_call_activity", {
+    admin.rpc("lead_call_activity", {
       p_org_id: org.id,
       p_org_slug: org_slug,
       p_include_zero_calls: include_zero_calls,
@@ -190,7 +184,7 @@ export async function listLeadsWithCallActivity(
       p_sort_by: sort_by ?? null,
       p_search: search ?? null,
     }),
-    supabase.rpc("lead_call_activity_count", {
+    admin.rpc("lead_call_activity_count", {
       p_org_id: org.id,
       p_org_slug: org_slug,
       p_include_zero_calls: include_zero_calls,
@@ -255,21 +249,14 @@ export async function getLeadStatusCounts(
     return fail(parsed.error.issues[0]?.message ?? "Invalid input");
   }
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const { user } = await requireUser();
   if (!user) return fail("Not authenticated");
 
-  const { data: org } = await supabase
-    .from("organisations")
-    .select("id")
-    .eq("slug", parsed.data.org_slug)
-    .eq("owner_id", user.id)
-    .maybeSingle<{ id: string }>();
+  const org = await getOrgForUser(user.id, { slug: parsed.data.org_slug }, user.email);
   if (!org) return fail("Forbidden");
 
-  const { data, error } = await supabase.rpc("lead_status_counts", {
+  const admin = createAdminClient();
+  const { data, error } = await admin.rpc("lead_status_counts", {
     p_org_id: org.id,
     p_include_zero_calls: parsed.data.include_zero_calls,
   });
@@ -299,45 +286,28 @@ export async function getLeadCallLifetimeStats(
   }
   const { org_slug } = parsed.data;
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const { user } = await requireUser();
   if (!user) return fail("Not authenticated");
 
-  const { data: org } = await supabase
-    .from("organisations")
-    .select("id, slug")
-    .eq("slug", org_slug)
-    .eq("owner_id", user.id)
-    .maybeSingle<{ id: string; slug: string }>();
+  const org = await getOrgForUser(user.id, { slug: org_slug }, user.email);
   if (!org) return fail("Forbidden");
 
-  // Three parallel counts:
-  //  - contacted_leads: reuse lead_call_activity_count with no filters and
-  //    include_zero_calls=false, which the RPC defines as "leads with at
-  //    least one call". Test calls don't carry a lead_id (the outbound
-  //    webhook short-circuits the lead merge for them) so they don't
-  //    inflate this number — no extra filter needed here.
-  //  - inbound_calls / outbound_calls: direct counts on the `calls` table
-  //    scoped by direction. Filter `is_test = false` so the headline
-  //    cards reflect real activity only; the calls_org_real_only_idx
-  //    partial index covers this WHERE clause.
+  const admin = createAdminClient();
   const [contactedRes, inboundRes, outboundRes] = await Promise.all([
-    supabase.rpc("lead_call_activity_count", {
+    admin.rpc("lead_call_activity_count", {
       p_org_id: org.id,
       p_org_slug: org_slug,
       p_include_zero_calls: false,
       p_filters: [],
       p_search: null,
     }),
-    supabase
+    admin
       .from("calls")
       .select("id", { count: "exact", head: true })
       .eq("organisation_id", org.id)
       .eq("direction", "inbound")
       .eq("is_test", false),
-    supabase
+    admin
       .from("calls")
       .select("id", { count: "exact", head: true })
       .eq("organisation_id", org.id)
@@ -386,21 +356,14 @@ export async function countLeadCallActivity(
   }
   const { org_slug, include_zero_calls, filters, search } = parsed.data;
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const { user } = await requireUser();
   if (!user) return fail("Not authenticated");
 
-  const { data: org } = await supabase
-    .from("organisations")
-    .select("id, slug")
-    .eq("slug", org_slug)
-    .eq("owner_id", user.id)
-    .maybeSingle<{ id: string; slug: string }>();
+  const org = await getOrgForUser(user.id, { slug: org_slug }, user.email);
   if (!org) return fail("Forbidden");
 
-  const { data, error } = await supabase.rpc("lead_call_activity_count", {
+  const admin = createAdminClient();
+  const { data, error } = await admin.rpc("lead_call_activity_count", {
     p_org_id: org.id,
     p_org_slug: org_slug,
     p_include_zero_calls: include_zero_calls,
