@@ -204,6 +204,16 @@ export function cleanCustomerName(
   // 10. Handle stray floating single letters & trailing initials
   // (e.g. "t Raina Dwivedi" -> "Raina Dwivedi", "TEJESH C S" -> "Tejesh", while preserving "k. rahul singh")
   let words = name.split(/\s+/).filter(Boolean);
+
+  // If there are no words with at least 2 letters (e.g. "R T", "R", "T", "A B C", "K."),
+  // it is merely isolated initials/single letters and not a real name — discard immediately.
+  const hasRealWord = words.some(
+    (w) => w.replace(/[^a-zA-Z\u0900-\u097F]/g, "").length >= 2,
+  );
+  if (!hasRealWord) {
+    return null;
+  }
+
   const hasMainName = words.some((w) => w.replace(/[^a-zA-Z\u0900-\u097F]/g, "").length >= 3);
 
   if (hasMainName && words.length > 1) {
@@ -257,9 +267,8 @@ export function cleanCustomerName(
   if (options.firstNameOnly !== false) {
     const parts = name.split(/\s+/).filter(Boolean);
     if (parts.length > 0) {
-      // If the first word is a single initial (like "K." or "K") and there is a subsequent word with length >= 2,
-      // pick the first full name (e.g., "K. Suresh" -> "Suresh")
-      let chosen = parts[0];
+      // Pick the first word that is a legitimate name (length >= 2)
+      let chosen: string | null = null;
       for (const p of parts) {
         const cleanP = p.replace(/[^a-zA-Z\u0900-\u097F]/g, "");
         if (cleanP.length >= 2) {
@@ -267,13 +276,28 @@ export function cleanCustomerName(
           break;
         }
       }
+      if (!chosen) {
+        return null;
+      }
       finalName = chosen;
     }
+  }
+
+  // Ensure extracted name is not a single letter
+  const cleanFinalBeforeTranslit = finalName.replace(/[^a-zA-Z\u0900-\u097F]/g, "");
+  if (cleanFinalBeforeTranslit.length < 2) {
+    return null;
   }
 
   // 15. Transliterate to Hindi (Devanagari) if requested (default: true)
   if (options.toDevanagari !== false) {
     finalName = transliterateToDevanagari(finalName);
+  }
+
+  // Final check: a single character (Latin or Devanagari e.g. "र", "R") is never a valid Voice AI name
+  const finalCleanChars = finalName.replace(/[^a-zA-Z\u0900-\u097F]/g, "");
+  if (finalCleanChars.length < 2) {
+    return null;
   }
 
   return finalName;

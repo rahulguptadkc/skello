@@ -140,4 +140,21 @@ describe("cleanCustomerName", () => {
     const cleaned = cleanNamesBatch(raw);
     expect(cleaned).toEqual(["तेजेश", "रैना", "सुरेश", null, null, "प्रिया", "कार्तिक"]);
   });
+
+  it("discards single letters, initials-only names, and single character outputs (e.g. 'R T', 'R', 'T', 'R. T.', 'A B C', 'र')", () => {
+    expect(cleanCustomerName("R T")).toBeNull();
+    expect(cleanCustomerName("R")).toBeNull();
+    expect(cleanCustomerName("T")).toBeNull();
+    expect(cleanCustomerName("R. T.")).toBeNull();
+    expect(cleanCustomerName("A B C")).toBeNull();
+    expect(cleanCustomerName("K.")).toBeNull();
+    expect(cleanCustomerName("र")).toBeNull();
+    expect(cleanCustomerName("R T", { toDevanagari: false })).toBeNull();
+    expect(cleanCustomerName("R T", { firstNameOnly: false })).toBeNull();
+    // Valid short names (>= 2 chars) must still be preserved
+    expect(cleanCustomerName("Om")).toBe("ओम");
+    expect(cleanCustomerName("Ali")).toBe("अली");
+    expect(cleanCustomerName("R T Suresh")).toBe("सुरेश");
+  });
 });
+

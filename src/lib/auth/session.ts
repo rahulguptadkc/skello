@@ -26,39 +26,34 @@ export async function getSession(): Promise<Session | null> {
 
   // 1. Try finding an active or invited membership by user_id or email
   try {
-    const memberQuery = admin
+    const { data: userMembers } = await admin
       .from("organisation_members")
-      .select("id, organisation_id, role, status, user_id")
+      .select("id, organisation_id, role, status, user_id, invited_by, created_at")
       .eq("user_id", user.id)
-      .limit(1)
-      .maybeSingle<{
-        id: string;
-        organisation_id: string;
-        role: OrgRole;
-        status: string;
-        user_id: string | null;
-      }>();
+      .neq("status", "suspended")
+      .order("created_at", { ascending: true });
 
-    let { data: member } = await memberQuery;
+    let members = userMembers ?? [];
 
     // Fallback: check by email if not linked by user_id
-    if (!member && userEmail) {
-      const { data: byEmail } = await admin
+    if (members.length === 0 && userEmail) {
+      const { data: emailMembers } = await admin
         .from("organisation_members")
-        .select("id, organisation_id, role, status, user_id")
+        .select("id, organisation_id, role, status, user_id, invited_by, created_at")
         .ilike("email", userEmail)
-        .limit(1)
-        .maybeSingle<{
-          id: string;
-          organisation_id: string;
-          role: OrgRole;
-          status: string;
-          user_id: string | null;
-        }>();
-      member = byEmail;
+        .neq("status", "suspended")
+        .order("created_at", { ascending: true });
+
+      members = emailMembers ?? [];
     }
 
-    if (member) {
+    if (members.length > 0) {
+      // Prioritize the workspace they were invited to by an admin (or member role)
+      const member =
+        members.find((m) => m.invited_by !== null) ??
+        members.find((m) => m.role === "member") ??
+        members[0];
+
       // Ensure user_id is bound and status is active
       if (member.user_id !== user.id || member.status !== "active") {
         await admin
@@ -81,7 +76,7 @@ export async function getSession(): Promise<Session | null> {
             ...org,
             industry: (org as unknown as { industry?: Organisation["industry"] }).industry ?? "real_estate",
           },
-          role: member.role,
+          role: member.role as OrgRole,
           memberId: member.id,
         };
       }

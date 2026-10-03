@@ -10,6 +10,7 @@ export interface ParsedContact {
   phone: string;
   name: string | null;
   raw_name?: string | null;
+  name_error?: string | null;
   metadata: Record<string, unknown>;
 }
 
@@ -22,6 +23,8 @@ export interface ParsedCsv {
   total_rows: number;
   valid_rows: number;
   duplicate_rows: number;
+  /** Number of rows where customer name for AI is blank after cleaning. */
+  blank_name_rows: number;
   /** Examples of cleaned names (e.g. "t Raina Dwivedi -> Raina Dwivedi") for UI preview. */
   cleaned_name_previews: Array<{ original: string; cleaned: string }>;
   /** Legacy alias for backwards compatibility */
@@ -66,7 +69,7 @@ export interface ParseCampaignCsvOptions {
 }
 
 export function parseCampaignCsv(
-  file: File,
+  file: File | string,
   options: ParseCampaignCsvOptions = { cleanNames: true },
 ): Promise<ParsedCsv> {
   return new Promise((resolve) => {
@@ -87,6 +90,7 @@ export function parseCampaignCsv(
             total_rows: result.data.length,
             valid_rows: 0,
             duplicate_rows: 0,
+            blank_name_rows: 0,
             cleaned_name_previews: [],
             converted_name_previews: [],
             error:
@@ -141,7 +145,25 @@ export function parseCampaignCsv(
 
         const cleanedPreviews: Array<{ original: string; cleaned: string }> = [];
         const contacts: ParsedContact[] = rawContacts.map((c, i) => {
-          const finalName = cleanedNames[i] ?? c.raw_name;
+          let finalName: string | null = null;
+          let nameError: string | null = null;
+
+          if (options.cleanNames !== false) {
+            const cleaned = cleanedNames[i];
+            if (cleaned && cleaned.trim()) {
+              finalName = cleaned.trim();
+            } else if (nameCol || c.raw_name) {
+              nameError =
+                "नाम खाली है (AI के लिए) — कृपया शीट में मैन्युअल रूप से नाम अपडेट करें (Name is blank for AI — please manually update in sheet)";
+            }
+          } else {
+            finalName = c.raw_name ? c.raw_name.trim() || null : null;
+            if (!finalName && (nameCol || c.raw_name)) {
+              nameError =
+                "नाम खाली है — कृपया शीट में मैन्युअल रूप से नाम अपडेट करें (Name is blank — please manually update in sheet)";
+            }
+          }
+
           if (
             c.raw_name &&
             finalName &&
@@ -164,6 +186,7 @@ export function parseCampaignCsv(
             phone: c.phone,
             name: finalName,
             raw_name: c.raw_name,
+            name_error: nameError,
             metadata: contactMeta,
           };
         });
@@ -174,6 +197,11 @@ export function parseCampaignCsv(
           devanagari: p.cleaned,
         }));
 
+        const hasNameSource = Boolean(nameCol || rawContacts.some((c) => c.raw_name));
+        const blankNameRows = hasNameSource
+          ? contacts.filter((c) => !c.name).length
+          : 0;
+
         resolve({
           contacts,
           phone_column: phoneCol,
@@ -181,6 +209,7 @@ export function parseCampaignCsv(
           total_rows: result.data.length,
           valid_rows: contacts.length,
           duplicate_rows: duplicates,
+          blank_name_rows: blankNameRows,
           cleaned_name_previews: cleanedPreviews,
           converted_name_previews: convertedPreviews,
           error: result.errors[0]?.message ?? null,
@@ -194,6 +223,7 @@ export function parseCampaignCsv(
           total_rows: 0,
           valid_rows: 0,
           duplicate_rows: 0,
+          blank_name_rows: 0,
           cleaned_name_previews: [],
           converted_name_previews: [],
           error: err.message,

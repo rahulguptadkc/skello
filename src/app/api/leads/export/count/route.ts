@@ -80,6 +80,8 @@ export async function GET(request: NextRequest) {
   const { from, to, filters, search } = parsed.data;
 
   const supabase = await createClient();
+  let count: number | null = null;
+
   const { data, error } = await supabase.rpc("lead_call_activity_count", {
     p_org_id: session.organisation.id,
     p_org_slug: session.organisation.slug,
@@ -89,26 +91,43 @@ export async function GET(request: NextRequest) {
     p_from: from ?? null,
     p_to: to ?? null,
   });
-  if (error) {
-    const message = logSkeloError("EXPORT", "Lead export count failed", {
-      organisationId: session.organisation.id,
-      cause: error,
-    });
-    return NextResponse.json({ error: message }, { status: 500 });
+
+  if (!error && data !== null && data !== undefined) {
+    count =
+      typeof data === "number"
+        ? data
+        : typeof data === "string"
+          ? Number.parseInt(data, 10)
+          : 0;
+  } else {
+    // Graceful fallback to direct count on leads table
+    let q = supabase
+      .from("leads")
+      .select("id", { count: "exact", head: true })
+      .eq("organisation_id", session.organisation.id);
+
+    if (from) q = q.gte("created_at", from);
+    if (to) q = q.lte("created_at", to);
+    if (search && search.trim().length > 0) {
+      const safe = search.replace(/[%,]/g, " ").trim();
+      if (safe.length >= 1) {
+        q = q.or(`name.ilike.%${safe}%,phone.ilike.%${safe}%`);
+      }
+    }
+
+    const { count: directCount, error: directErr } = await q;
+    if (directErr) {
+      const message = logSkeloError("EXPORT", "Lead export count failed", {
+        organisationId: session.organisation.id,
+        cause: error ?? directErr,
+      });
+      return NextResponse.json({ error: message }, { status: 500 });
+    }
+    count = directCount ?? 0;
   }
 
-  // The RPC returns a bigint; postgrest-js surfaces it as `number` for
-  // small values and `string` once it exceeds 2^53. Normalising to number
-  // here is safe — an org with >9_quadrillion leads is not a concern.
-  const count =
-    typeof data === "number"
-      ? data
-      : typeof data === "string"
-        ? Number.parseInt(data, 10)
-        : 0;
-
   return NextResponse.json(
-    { count, cap: EXPORT_CAP },
+    { count: count ?? 0, cap: EXPORT_CAP },
     { headers: { "Cache-Control": "no-store" } },
   );
 }

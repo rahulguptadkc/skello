@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import Papa from "papaparse";
 import {
+  AlertCircleIcon,
   ArrowUpRightIcon,
   BotIcon,
   CheckCircle2Icon,
@@ -138,7 +139,7 @@ export function CampaignUploadDialog({
   const [viewerOpen, setViewerOpen] = React.useState(false);
   const [viewerSearch, setViewerSearch] = React.useState("");
   const [viewerFilter, setViewerFilter] = React.useState<
-    "all" | "cleaned" | "unchanged"
+    "all" | "cleaned" | "unchanged" | "blank"
   >("all");
   const [dragOver, setDragOver] = React.useState(false);
   const [scheduleMode, setScheduleMode] = React.useState<ScheduleMode>("now");
@@ -278,6 +279,11 @@ export function CampaignUploadDialog({
       setParsed(result);
       if (result.error && result.valid_rows === 0) {
         toast.error(result.error);
+      } else if (result.blank_name_rows > 0) {
+        toast.error(
+          `${result.blank_name_rows} contact${result.blank_name_rows > 1 ? "s have" : " has"} a blank AI name after cleaning. Please manually update in your sheet.`,
+          { duration: 6000 },
+        );
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not parse CSV");
@@ -351,6 +357,14 @@ export function CampaignUploadDialog({
   const effectiveNumberCount =
     fromPhoneChoices.length > 0 ? fromPhoneChoices.length : numbersAvailable;
 
+  const blankCount = React.useMemo(() => {
+    if (!parsed) return 0;
+    if (!parsed.name_column && !parsed.contacts.some((c) => c.raw_name)) {
+      return 0;
+    }
+    return parsed.contacts.filter((c) => !c.name || !c.name.trim()).length;
+  }, [parsed]);
+
   const filteredContacts = React.useMemo(() => {
     if (!parsed) return [];
     let list = parsed.contacts;
@@ -358,8 +372,10 @@ export function CampaignUploadDialog({
       list = list.filter((c) => c.raw_name && c.name && c.raw_name !== c.name);
     } else if (viewerFilter === "unchanged") {
       list = list.filter(
-        (c) => !c.raw_name || (c.name && c.raw_name === c.name),
+        (c) => c.name && (!c.raw_name || c.raw_name === c.name),
       );
+    } else if (viewerFilter === "blank") {
+      list = list.filter((c) => !c.name || !c.name.trim());
     }
     if (!viewerSearch.trim()) return list;
     const q = viewerSearch.toLowerCase().trim();
@@ -380,8 +396,10 @@ export function CampaignUploadDialog({
 
   const unchangedCount = React.useMemo(() => {
     if (!parsed) return 0;
-    return parsed.contacts.length - modifiedCount;
-  }, [parsed, modifiedCount]);
+    return parsed.contacts.filter(
+      (c) => c.name && (!c.raw_name || c.raw_name === c.name),
+    ).length;
+  }, [parsed]);
 
   function handleDownloadCleanedCsv() {
     if (!parsed || parsed.contacts.length === 0) return;
@@ -414,6 +432,15 @@ export function CampaignUploadDialog({
     }
     if (!parsed || parsed.valid_rows === 0) {
       toast.error("Upload a CSV with at least one valid phone number");
+      return;
+    }
+    if (blankCount > 0) {
+      toast.error(
+        `${blankCount} contact${blankCount > 1 ? "s have" : " has"} a blank Devanagari name for AI after cleaning. Please manually update in your sheet before starting the campaign.`,
+        { duration: 6000 },
+      );
+      setViewerFilter("blank");
+      setViewerOpen(true);
       return;
     }
     if (scheduleMode === "later") {
@@ -489,7 +516,10 @@ export function CampaignUploadDialog({
         // caller ID for the whole run); otherwise the rotation pool drives it.
         from_phone_number:
           fromPhoneChoices.length === 1 ? fromPhoneChoices[0] : null,
-        from_phone_numbers: fromPhoneChoices,
+        from_phone_numbers:
+          fromPhoneChoices.length > 0
+            ? fromPhoneChoices
+            : (voiceConfig?.dial_numbers ?? []).map((n) => n.phone),
         workflow_id:
           workflowChoice && workflowChoice !== "none" ? workflowChoice : null,
         workflow_name:
@@ -648,7 +678,7 @@ export function CampaignUploadDialog({
                           <div className="flex items-center justify-between gap-2 mb-2">
                             <p className="font-semibold text-foreground text-[11px] flex items-center gap-1.5">
                               <SparklesIcon className="size-3.5 text-emerald-500" />
-                              Voice AI Cleaned Names Preview (
+                              Voice AI Cleaned Names Preview (Devanagari) (
                               {parsed.cleaned_name_previews?.length ??
                                 parsed.converted_name_previews?.length}{" "}
                               shown):
@@ -664,8 +694,8 @@ export function CampaignUploadDialog({
                             >
                               <RotateCcwIcon
                                 className={cn(
-                                   "size-3 mr-1",
-                                   parsing && "animate-spin",
+                                  "size-3 mr-1",
+                                  parsing && "animate-spin",
                                 )}
                               />
                               Retry clean
@@ -692,6 +722,44 @@ export function CampaignUploadDialog({
                                 </span>
                               </span>
                             ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Error alert for blank AI names after cleaning */}
+                      {blankCount > 0 && (
+                        <div className="mt-2.5 w-full max-w-md rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-left text-xs shadow-xs">
+                          <div className="flex items-start gap-2.5">
+                            <AlertCircleIcon className="size-4 text-destructive shrink-0 mt-0.5" />
+                            <div className="flex-1 space-y-1">
+                              <div className="flex items-center justify-between">
+                                <p className="font-semibold text-destructive text-[11px]">
+                                  {blankCount} Blank AI Name{blankCount > 1 ? "s" : ""} Detected
+                                </p>
+                                <span className="text-[10px] font-mono bg-destructive/20 text-destructive px-1.5 py-0.5 rounded font-medium">
+                                  Action required
+                                </span>
+                              </div>
+      
+                              <p className="text-[10px] text-muted-foreground leading-tight">
+                                Name for customer is blank after cleaning for AI. Please manually update {blankCount > 1 ? "them" : "it"} in your sheet.
+                              </p>
+                              <div className="pt-1">
+                                <Button
+                                  type="button"
+                                  size="xs"
+                                  variant="destructive"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setViewerFilter("blank");
+                                    setViewerOpen(true);
+                                  }}
+                                  className="h-6 text-[11px] px-2.5"
+                                >
+                                  <EyeIcon className="size-3 mr-1" /> View {blankCount} blank name{blankCount > 1 ? "s" : ""}
+                                </Button>
+                              </div>
+                            </div>
                           </div>
                         </div>
                       )}
@@ -1396,6 +1464,21 @@ export function CampaignUploadDialog({
               >
                 Unchanged ({unchangedCount})
               </button>
+              {blankCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setViewerFilter("blank")}
+                  className={cn(
+                    "px-3 py-1 text-xs font-medium rounded-md transition-colors flex items-center gap-1",
+                    viewerFilter === "blank"
+                      ? "bg-destructive text-destructive-foreground shadow-xs"
+                      : "text-destructive hover:bg-destructive/10",
+                  )}
+                >
+                  <AlertCircleIcon className="size-3" />
+                  Blank AI Name ({blankCount})
+                </button>
+              )}
             </div>
 
             <div className="relative flex-1 max-w-sm">
@@ -1418,6 +1501,30 @@ export function CampaignUploadDialog({
             </div>
           </div>
 
+          {/* Warning banner if blank AI names detected */}
+          {blankCount > 0 && (
+            <div className="flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-lg border border-destructive/40 bg-destructive/10 text-xs text-destructive">
+              <div className="flex items-center gap-2">
+                <AlertCircleIcon className="size-4 shrink-0" />
+                <span>
+                  <strong>{blankCount} contact{blankCount > 1 ? "s" : ""} missing Devanagari AI name after cleaning.</strong>{" "}
+                  (Please manually update in sheet).
+                </span>
+              </div>
+              {viewerFilter !== "blank" && (
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="destructive"
+                  onClick={() => setViewerFilter("blank")}
+                  className="h-6 text-[11px] shrink-0"
+                >
+                  Show {blankCount} blank
+                </Button>
+              )}
+            </div>
+          )}
+
           {/* Full Height Responsive Table */}
           <div className="flex-1 overflow-auto rounded-lg border border-border/70 bg-card shadow-xs">
             <table className="w-full text-left text-xs border-collapse">
@@ -1425,9 +1532,9 @@ export function CampaignUploadDialog({
                 <tr>
                   <th className="py-2.5 px-4 font-semibold w-14">#</th>
                   <th className="py-2.5 px-4 font-semibold w-44">Phone Number</th>
-                  <th className="py-2.5 px-4 font-semibold w-64">Cleaned Name for AI</th>
-                  <th className="py-2.5 px-4 font-semibold w-64">Original in CSV</th>
-                  <th className="py-2.5 px-4 font-semibold w-32">Status</th>
+                  <th className="py-2.5 px-4 font-semibold w-72">Cleaned Name for AI (Devanagari)</th>
+                  <th className="py-2.5 px-4 font-semibold w-56">Original in CSV</th>
+                  <th className="py-2.5 px-4 font-semibold w-36">Status</th>
                   <th className="py-2.5 px-4 font-semibold">Additional Fields</th>
                 </tr>
               </thead>
@@ -1463,13 +1570,16 @@ export function CampaignUploadDialog({
                         </td>
                         <td className="py-2.5 px-4">
                           {contact.name ? (
-                            <span className="font-semibold text-emerald-600 dark:text-emerald-400">
+                            <span className="font-semibold text-emerald-600 dark:text-emerald-400 font-mono text-[13px]">
                               {contact.name}
                             </span>
                           ) : (
-                            <span className="text-muted-foreground/50 italic">
-                              —
-                            </span>
+                            <div className="flex flex-col gap-1 items-start max-w-sm py-0.5">
+                              <span className="inline-flex items-center gap-1 rounded bg-destructive/10 border border-destructive/30 px-2 py-0.5 text-[11px] font-semibold text-destructive">
+                                <AlertCircleIcon className="size-3 shrink-0" />
+                                (Blank Customer Name)
+                              </span>
+                            </div>
                           )}
                         </td>
                         <td className="py-2.5 px-4 text-muted-foreground">
@@ -1488,17 +1598,17 @@ export function CampaignUploadDialog({
                           )}
                         </td>
                         <td className="py-2.5 px-4">
-                          {isModified ? (
+                          {!contact.name ? (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-destructive/10 border border-destructive/30 px-2.5 py-0.5 text-[10px] font-medium text-destructive">
+                              <AlertCircleIcon className="size-2.5 shrink-0" /> Blank AI Name
+                            </span>
+                          ) : isModified ? (
                             <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
                               <SparklesIcon className="size-2.5" /> Cleaned
                             </span>
-                          ) : contact.name ? (
+                          ) : (
                             <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
                               Original
-                            </span>
-                          ) : (
-                            <span className="text-muted-foreground/40 text-[10px]">
-                              —
                             </span>
                           )}
                         </td>
@@ -1539,7 +1649,8 @@ export function CampaignUploadDialog({
               <strong className="text-foreground">
                 {filteredContacts.length}
               </strong>{" "}
-              of {parsed?.valid_rows ?? 0} contacts ({modifiedCount} cleaned)
+              of {parsed?.valid_rows ?? 0} contacts ({modifiedCount} cleaned
+              {blankCount > 0 ? `, ${blankCount} blank AI names` : ""})
             </p>
             <div className="flex items-center gap-2">
               <Button

@@ -3,7 +3,7 @@ import { z } from "zod";
 
 import { logSkeloError } from "@/lib/errors";
 import { requireSession } from "@/lib/auth/session";
-import { type CsvColumn, toCsv, withBom } from "@/lib/csv";
+import { toCsv, withBom } from "@/lib/csv";
 import { applyCallFilters } from "@/lib/queries/call-filters";
 import { checkRateLimit, tooManyRequestsResponse } from "@/lib/rate-limit";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -85,37 +85,12 @@ interface CallRow {
   lead: { name: string | null; phone: string | null } | null;
 }
 
-interface ExportRow extends CallRow {
-  agent_label: string | null;
-  counterparty_phone: string | null;
-}
-
-const STATIC_CSV_COLUMNS: CsvColumn<ExportRow>[] = [
-  { header: "Call ID", value: (c) => c.id },
-  { header: "Lead Name", value: (c) => c.lead?.name ?? null },
-  { header: "Phone", value: (c) => c.lead?.phone ?? c.counterparty_phone },
-  { header: "Date & Time", value: (c) => c.started_at },
-  { header: "Duration (sec)", value: (c) => c.duration_seconds },
-  {
-    header: "Direction",
-    value: (c) =>
-      c.direction
-        ? c.direction.charAt(0).toUpperCase() + c.direction.slice(1)
-        : null,
-  },
-  {
-    header: "Outcome",
-    value: (c) =>
-      c.status ? c.status.charAt(0).toUpperCase() + c.status.slice(1) : null,
-  },
-  {
-    header: "Disposition",
-    value: (c) => c.call_outcome ?? c.interest ?? c.lead_intent_extracted,
-  },
-  { header: "Agent", value: (c) => c.agent_label ?? c.agent_id },
-  { header: "Summary", value: (c) => c.summary },
-  { header: "Transcript", value: (c) => c.transcript },
-];
+import {
+  buildCallExportCsvColumns,
+  fetchAgentLabels,
+  getExportExtractionDefinitions,
+  type UnifiedCallRecord,
+} from "@/lib/export/shared-export-columns";
 
 export async function GET(request: NextRequest) {
   const session = await requireSession();
@@ -206,15 +181,20 @@ export async function GET(request: NextRequest) {
   // Resolve agent labels in one round trip. Falls back to the raw agent_id
   // when no voice_agents row exists (e.g. a legacy / unregistered agent).
   const agentIds = Array.from(new Set(calls.map((c) => c.agent_id).filter(Boolean)));
-  const labelById = await fetchAgentLabels(session.organisation.id, agentIds);
+  const labelById = await fetchAgentLabels(admin, session.organisation.id, agentIds);
 
-  const rows: ExportRow[] = calls.map((c) => ({
+  const rows: UnifiedCallRecord[] = calls.map((c) => ({
     ...c,
     agent_label: labelById.get(c.agent_id) ?? null,
     counterparty_phone: c.direction === "inbound" ? c.from_phone : c.to_phone,
   }));
 
-  const csvColumns = STATIC_CSV_COLUMNS;
+  const extractions = await getExportExtractionDefinitions(
+    admin,
+    session.organisation.id,
+    rows,
+  );
+  const csvColumns = buildCallExportCsvColumns(extractions);
   const body = withBom(toCsv(rows, csvColumns));
   const stamp = new Date().toISOString().slice(0, 10);
   const rangeLabel = (range ?? "custom").replace(/[^a-z0-9_-]+/gi, "_");
@@ -234,31 +214,4 @@ export async function GET(request: NextRequest) {
       "X-Export-Truncated": truncated ? "true" : "false",
     },
   });
-}
-
-async function fetchAgentLabels(
-  organisationId: string,
-  agentIds: string[],
-): Promise<Map<string, string>> {
-  const out = new Map<string, string>();
-  if (agentIds.length === 0) return out;
-  const admin = createAdminClient();
-  const { data, error } = await admin
-    .from("voice_agents")
-    .select("agent_id, label")
-    .eq("organisation_id", organisationId)
-    .in("agent_id", agentIds)
-    .returns<{ agent_id: string; label: string | null }[]>();
-  if (error) {
-    logSkeloError("EXPORT", "Voice-agent label fetch failed (CSV will fall back to agent_id)", {
-      organisationId,
-      cause: error,
-    });
-    return out;
-  }
-  for (const row of data ?? []) {
-    const label = row.label?.trim();
-    if (label) out.set(row.agent_id, label);
-  }
-  return out;
 }

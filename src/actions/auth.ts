@@ -133,25 +133,47 @@ export async function login(
   if (profile?.is_admin) {
     redirectTo = "/admin";
   } else {
-    const { data: ownedOrg } = await admin
-      .from("organisations")
-      .select("id")
-      .eq("owner_id", user.id)
-      .limit(1)
-      .maybeSingle();
+    const userEmail = (user.email ?? "").toLowerCase().trim();
 
-    if (ownedOrg) {
+    // Check if user has a membership by user_id or email
+    let { data: member } = await admin
+      .from("organisation_members")
+      .select("id, organisation_id, user_id, status")
+      .eq("user_id", user.id)
+      .neq("status", "suspended")
+      .limit(1)
+      .maybeSingle<{ id: string; organisation_id: string; user_id: string | null; status: string }>();
+
+    if (!member && userEmail) {
+      const { data: byEmail } = await admin
+        .from("organisation_members")
+        .select("id, organisation_id, user_id, status")
+        .ilike("email", userEmail)
+        .neq("status", "suspended")
+        .limit(1)
+        .maybeSingle<{ id: string; organisation_id: string; user_id: string | null; status: string }>();
+      member = byEmail;
+    }
+
+    if (member) {
+      // Ensure user_id is bound and status is active upon logging in
+      if (member.user_id !== user.id || member.status !== "active") {
+        await admin
+          .from("organisation_members")
+          .update({ user_id: user.id, status: "active" })
+          .eq("id", member.id);
+      }
       redirectTo = "/dashboard";
     } else {
-      const userEmail = (user.email ?? "").toLowerCase().trim();
-      const { data: member } = await admin
-        .from("organisation_members")
-        .select("id, organisation_id")
-        .or(`user_id.eq.${user.id},email.ilike.${userEmail}`)
+      // Fallback: check if user owns an organisation directly
+      const { data: ownedOrg } = await admin
+        .from("organisations")
+        .select("id")
+        .eq("owner_id", user.id)
         .limit(1)
         .maybeSingle();
 
-      redirectTo = member ? "/dashboard" : "/onboarding";
+      redirectTo = ownedOrg ? "/dashboard" : "/onboarding";
     }
   }
 

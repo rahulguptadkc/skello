@@ -45,7 +45,7 @@ export function stringifyCustomValue(value: unknown): string | null {
   }
   if (typeof value === "string") {
     const t = value.trim();
-    if (!t) return null;
+    if (!t || t.toLowerCase() === ":null") return null;
     const lower = t.toLowerCase();
     if (lower === "yes" || lower === "true") return "Yes";
     if (lower === "no" || lower === "false") return "No";

@@ -85,14 +85,29 @@ export async function listOrganisations(): Promise<ActionResult<Organisation[]>>
   if (ownedErr) return fail(ownedErr.message);
 
   // Fetch organisations where user is a member (by user_id or email)
-  const { data: memberRows } = await admin
+  const { data: byUser } = await admin
     .from("organisation_members")
     .select("organisation_id")
-    .or(`user_id.eq.${user.id},email.ilike.${userEmail}`)
-    .eq("status", "active")
+    .eq("user_id", user.id)
+    .neq("status", "suspended")
     .returns<{ organisation_id: string }[]>();
 
-  const orgIds = (memberRows ?? []).map((m) => m.organisation_id).filter(Boolean);
+  const orgIdSet = new Set<string>((byUser ?? []).map((m) => m.organisation_id).filter(Boolean));
+
+  if (userEmail) {
+    const { data: byEmail } = await admin
+      .from("organisation_members")
+      .select("organisation_id")
+      .ilike("email", userEmail)
+      .neq("status", "suspended")
+      .returns<{ organisation_id: string }[]>();
+
+    for (const m of byEmail ?? []) {
+      if (m.organisation_id) orgIdSet.add(m.organisation_id);
+    }
+  }
+
+  const orgIds = Array.from(orgIdSet);
   let memberOrgs: Organisation[] = [];
   if (orgIds.length > 0) {
     const { data: orgs } = await admin

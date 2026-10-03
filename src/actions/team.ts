@@ -116,17 +116,10 @@ export async function inviteTeamMember(
   // Check if member already in workspace (using admin client to bypass RLS and case-insensitive check)
   const { data: existing } = await admin
     .from("organisation_members")
-    .select("id, status")
+    .select("id, status, user_id")
     .eq("organisation_id", session.organisation.id)
     .ilike("email", cleanEmail)
-    .maybeSingle<{ id: string; status: string }>();
-
-  if (existing) {
-    if (existing.status === "active") {
-      return fail(`${cleanEmail} is already an active member of this workspace.`);
-    }
-    return fail(`${cleanEmail} has already been invited to this workspace.`);
-  }
+    .maybeSingle<{ id: string; status: string; user_id: string | null }>();
 
   // Check if user already exists in auth.users via admin client
   const { data: userList } = await admin.auth.admin.listUsers({ page: 1, perPage: 200 });
@@ -143,14 +136,70 @@ export async function inviteTeamMember(
       password: tempPassword,
       email_confirm: true,
     });
-    if (!createErr && createdUser?.user) {
+    if (createErr) {
+      if (
+        createErr.message.toLowerCase().includes("already") ||
+        (createErr as { code?: string }).code === "email_exists"
+      ) {
+        let page = 2;
+        while (!matchedUser && page <= 10) {
+          const { data: moreUsers } = await admin.auth.admin.listUsers({ page, perPage: 200 });
+          if (!moreUsers?.users || moreUsers.users.length === 0) break;
+          matchedUser = moreUsers.users.find(
+            (u) => (u.email ?? "").toLowerCase().trim() === cleanEmail,
+          );
+          page++;
+        }
+        if (matchedUser) {
+          const { error: updErr } = await admin.auth.admin.updateUserById(matchedUser.id, {
+            password: tempPassword,
+            email_confirm: true,
+          });
+          if (updErr) return fail(`Failed to set user password: ${updErr.message}`);
+        } else {
+          return fail(`A user with email ${cleanEmail} already exists in authentication.`);
+        }
+      } else {
+        return fail(`Failed to create user account: ${createErr.message}`);
+      }
+    } else if (createdUser?.user) {
       matchedUser = createdUser.user;
     }
   } else {
-    await admin.auth.admin.updateUserById(matchedUser.id, {
+    const { error: updateErr } = await admin.auth.admin.updateUserById(matchedUser.id, {
       password: tempPassword,
       email_confirm: true,
     });
+    if (updateErr) {
+      return fail(`Failed to set user password: ${updateErr.message}`);
+    }
+  }
+
+  if (existing) {
+    // Member was already in the workspace: update password, role, ensure status is active and linked
+    const { data: updatedMember, error: updateErr } = await admin
+      .from("organisation_members")
+      .update({
+        user_id: matchedUser ? matchedUser.id : existing.user_id,
+        role,
+        status: "active",
+      })
+      .eq("id", existing.id)
+      .select("*")
+      .single<OrganisationMember>();
+
+    if (updateErr) return fail(updateErr.message);
+
+    await sendTeamInviteEmail({
+      toEmail: cleanEmail,
+      temporaryPassword: tempPassword,
+      orgName: session.organisation.name,
+      inviterEmail: session.email,
+      role,
+    });
+
+    revalidatePath("/settings/team");
+    return ok({ ...updatedMember, temporaryPassword: tempPassword });
   }
 
   const insertData = {
@@ -181,7 +230,7 @@ export async function inviteTeamMember(
 
   // Dispatch invite email with credentials
   await sendTeamInviteEmail({
-    toEmail: email,
+    toEmail: cleanEmail,
     temporaryPassword: tempPassword,
     orgName: session.organisation.name,
     inviterEmail: session.email,

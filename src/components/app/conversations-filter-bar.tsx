@@ -132,12 +132,12 @@ export function ConversationsFilterBar({
           />
         </FilterField>
 
-        <FilterField label="Outcome" className="w-44">
+        <FilterField label="Status" className="w-44">
           <FilterSelect
             value={filters.status ?? "__any"}
             onChange={(v) => updateParam("status", v)}
             options={STATUS_OPTIONS}
-            ariaLabel="Outcome"
+            ariaLabel="Status"
           />
         </FilterField>
 

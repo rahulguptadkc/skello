@@ -200,6 +200,7 @@ export type IntegrationRow = {
   agent_id: string;
   api_key: string;
   from_phone_number: string | null;
+  from_phone_numbers?: string[] | null;
   enabled: boolean;
   max_connected_calls_per_lead: number | null;
 };
@@ -280,6 +281,8 @@ export interface PickNumberInput {
   minSamples: number;
   // After backoff is exhausted, allow dialing the least-bad resting number.
   allowLeastBad: boolean;
+  // Optional number to avoid (e.g. caller ID used on previous attempt for this contact).
+  avoidNumber?: string | null;
 }
 
 export type PickNumberResult =
@@ -293,6 +296,8 @@ export type PickNumberResult =
 //     dials) so volume spreads instead of dumping on the single healthiest one.
 //   - If ALL numbers are resting: defer, unless backoff is exhausted
 //     (allowLeastBad) — then dial the highest-connect-rate number (degraded).
+//   - If avoidNumber is given and multiple eligible numbers exist, rotate away
+//     from avoidNumber so retries use a different caller ID.
 //   - No numbers configured at all → dial with no caller-ID (provider's pool).
 export function pickHealthyNumber(input: PickNumberInput): PickNumberResult {
   const { health, batchUsage, floorPct, minSamples, allowLeastBad } = input;
@@ -322,8 +327,16 @@ export function pickHealthyNumber(input: PickNumberInput): PickNumberResult {
   });
 
   if (healthy.length > 0) {
+    // If an avoidNumber is specified (e.g. from previous attempt) and multiple healthy
+    // numbers exist, churn/rotate away from the previous number.
+    const preferred =
+      healthy.length > 1 && input.avoidNumber
+        ? healthy.filter((n) => n !== input.avoidNumber)
+        : healthy;
+    const candidatesToPick = preferred.length > 0 ? preferred : healthy;
+
     // Least-loaded first; ties keep candidate order (stable rotation).
-    const best = healthy.reduce((a, b) => (load(b) < load(a) ? b : a));
+    const best = candidatesToPick.reduce((a, b) => (load(b) < load(a) ? b : a));
     return { kind: "dial", number: best, degraded: false };
   }
 
@@ -331,7 +344,14 @@ export function pickHealthyNumber(input: PickNumberInput): PickNumberResult {
   if (!allowLeastBad) return { kind: "defer" };
 
   // Least-bad: highest connect rate; ties broken by least load.
-  const leastBad = candidates.reduce((a, b) => {
+  const candidatesForLeastBad =
+    candidates.length > 1 && input.avoidNumber
+      ? candidates.filter((n) => n !== input.avoidNumber)
+      : candidates;
+  const targetCandidates =
+    candidatesForLeastBad.length > 0 ? candidatesForLeastBad : candidates;
+
+  const leastBad = targetCandidates.reduce((a, b) => {
     const ra = rate(a) ?? 0;
     const rb = rate(b) ?? 0;
     if (rb > ra) return b;
@@ -484,7 +504,7 @@ export async function dispatchDueCampaignContacts(): Promise<DispatchResult> {
   const { data: integrations } = await admin
     .from("bolna_integrations")
     .select(
-      "organisation_id, agent_id, api_key, from_phone_number, enabled, max_connected_calls_per_lead",
+      "organisation_id, agent_id, api_key, from_phone_number, from_phone_numbers, enabled, max_connected_calls_per_lead",
     )
     .in("organisation_id", orgIds)
     .returns<IntegrationRow[]>();
@@ -635,8 +655,18 @@ export async function dispatchDueCampaignContacts(): Promise<DispatchResult> {
       // so a contact that must be deferred (all numbers resting) doesn't burn
       // its pending state.
       const cmp = contact.campaign;
+      const lastFromPhone =
+        (contact.metadata as Record<string, unknown> | null)?.last_from_phone as string | undefined;
+
+      const effectivePool =
+        cmp?.from_phone_numbers && cmp.from_phone_numbers.length > 0
+          ? cmp.from_phone_numbers
+          : (integration.from_phone_numbers && integration.from_phone_numbers.length > 0)
+            ? integration.from_phone_numbers
+            : [];
+
       const pick = pickHealthyNumber({
-        pool: cmp?.from_phone_numbers ?? [],
+        pool: effectivePool,
         singleOverride: cmp?.from_phone_number ?? integration.from_phone_number,
         health: healthByCampaign.get(contact.campaign_id) ?? new Map(),
         batchUsage,
@@ -645,6 +675,7 @@ export async function dispatchDueCampaignContacts(): Promise<DispatchResult> {
         // After a few backoff rounds, allow dialing the least-bad number so the
         // run finishes (operator chose completion over number-preservation).
         allowLeastBad: contact.health_defer_count >= MAX_HEALTH_BACKOFF_ROUNDS,
+        avoidNumber: lastFromPhone ?? null,
       });
 
       if (pick.kind === "defer") {
@@ -665,6 +696,20 @@ export async function dispatchDueCampaignContacts(): Promise<DispatchResult> {
         return { id: contact.id, ok: false, reason: "numbers_resting" };
       }
 
+      // Normalise the sentinel: "" means "no caller-ID, let the provider pick"
+      // → store NULL on the call row.
+      const fromPhoneForDial: string | null = pick.number || null;
+
+      // Count this dial in-batch IMMEDIATELY (synchronously) so concurrent workers
+      // in pooledMap spread across eligible numbers rather than all 25 workers
+      // piling onto the first number during CAS await.
+      if (fromPhoneForDial) {
+        batchUsage.set(
+          fromPhoneForDial,
+          (batchUsage.get(fromPhoneForDial) ?? 0) + 1,
+        );
+      }
+
       // CAS claim — only proceed if the row is still pending.
       const { data: claim } = await admin
         .from("campaign_contacts")
@@ -674,21 +719,15 @@ export async function dispatchDueCampaignContacts(): Promise<DispatchResult> {
         .select("id")
         .maybeSingle<{ id: string }>();
       if (!claim) {
+        if (fromPhoneForDial) {
+          batchUsage.set(
+            fromPhoneForDial,
+            Math.max(0, (batchUsage.get(fromPhoneForDial) ?? 1) - 1),
+          );
+        }
         return { id: contact.id, ok: false, reason: "lost_claim" };
       }
 
-      // Normalise the sentinel: "" means "no caller-ID, let the provider pick"
-      // → store NULL on the call row.
-      const fromPhoneForDial: string | null = pick.number || null;
-
-      // Count this dial in-batch so concurrent workers spread across eligible
-      // numbers rather than all piling onto the single healthiest one.
-      if (fromPhoneForDial) {
-        batchUsage.set(
-          fromPhoneForDial,
-          (batchUsage.get(fromPhoneForDial) ?? 0) + 1,
-        );
-      }
       // Reset the all-resting backoff counter when we dial from a HEALTHY
       // number; a least-bad (degraded) dial leaves it high so we stay in
       // least-bad mode until a number actually recovers.
@@ -765,6 +804,10 @@ export async function dispatchDueCampaignContacts(): Promise<DispatchResult> {
             last_call_id: callRow.id,
             last_error: null,
             ...(resetHealthDefer ? { health_defer_count: 0 } : {}),
+            metadata: {
+              ...(contact.metadata || {}),
+              ...(fromPhoneForDial ? { last_from_phone: fromPhoneForDial } : {}),
+            },
           })
           .eq("id", contact.id);
 
@@ -838,6 +881,10 @@ export async function dispatchDueCampaignContacts(): Promise<DispatchResult> {
               next_attempt_at: new Date(
                 Date.now() + intervalSec * 1000,
               ).toISOString(),
+              metadata: {
+                ...(contact.metadata || {}),
+                ...(fromPhoneForDial ? { last_from_phone: fromPhoneForDial } : {}),
+              },
             })
             .eq("id", contact.id);
         }

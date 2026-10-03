@@ -103,7 +103,7 @@ const SORTABLE_HEADERS: {
   { field: "started_at", label: "Date & Time", defaultWidth: 170 },
   { field: "duration_seconds", label: "Duration", defaultWidth: 110 },
   { field: "direction", label: "Direction", defaultWidth: 130 },
-  { field: "status", label: "Outcome", defaultWidth: 130 },
+  { field: "status", label: "Status", defaultWidth: 130 },
 ];
 
 const COL_CALL_ID = "call_id";
@@ -320,7 +320,7 @@ export function ConversationsTable({
                 scope="col"
                 className="relative px-4 py-3 font-medium"
               >
-                Disposition
+                Call Outcome
                 <ColumnResizeHandle
                   onStart={makeResizeStarter(
                     COL_DISPOSITION,

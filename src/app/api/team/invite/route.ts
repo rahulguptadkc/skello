@@ -81,20 +81,10 @@ export async function POST(req: NextRequest) {
     // Check existing member in workspace
     const { data: existing } = await admin
       .from("organisation_members")
-      .select("id, status")
+      .select("id, status, user_id")
       .eq("organisation_id", targetOrgId)
       .ilike("email", cleanEmail)
-      .maybeSingle<{ id: string; status: string }>();
-
-    if (existing) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: `${cleanEmail} is already a member of this workspace.`,
-        },
-        { status: 400 },
-      );
-    }
+      .maybeSingle<{ id: string; status: string; user_id: string | null }>();
 
     // Look up or provision auth user
     const { data: userList } = await admin.auth.admin.listUsers({
@@ -116,58 +106,117 @@ export async function POST(req: NextRequest) {
         });
 
       if (createErr) {
-        return NextResponse.json(
-          {
-            success: false,
-            error: `Failed to create user account: ${createErr.message}`,
-          },
-          { status: 500 },
-        );
-      }
-
-      if (createdUser?.user) {
+        if (
+          createErr.message.toLowerCase().includes("already") ||
+          (createErr as { code?: string }).code === "email_exists"
+        ) {
+          let page = 2;
+          while (!matchedUser && page <= 10) {
+            const { data: moreUsers } = await admin.auth.admin.listUsers({ page, perPage: 200 });
+            if (!moreUsers?.users || moreUsers.users.length === 0) break;
+            matchedUser = moreUsers.users.find(
+              (u) => (u.email ?? "").toLowerCase().trim() === cleanEmail,
+            );
+            page++;
+          }
+          if (matchedUser) {
+            const { error: updErr } = await admin.auth.admin.updateUserById(matchedUser.id, {
+              password: tempPassword,
+              email_confirm: true,
+            });
+            if (updErr) {
+              return NextResponse.json(
+                { success: false, error: `Failed to set user password: ${updErr.message}` },
+                { status: 500 },
+              );
+            }
+          } else {
+            return NextResponse.json(
+              { success: false, error: `A user with email ${cleanEmail} already exists in authentication.` },
+              { status: 400 },
+            );
+          }
+        } else {
+          return NextResponse.json(
+            {
+              success: false,
+              error: `Failed to create user account: ${createErr.message}`,
+            },
+            { status: 500 },
+          );
+        }
+      } else if (createdUser?.user) {
         matchedUser = createdUser.user;
       }
     } else {
-      await admin.auth.admin.updateUserById(matchedUser.id, {
+      const { error: updErr } = await admin.auth.admin.updateUserById(matchedUser.id, {
         password: tempPassword,
         email_confirm: true,
       });
-    }
-
-    const insertData = {
-      organisation_id: targetOrgId,
-      user_id: matchedUser ? matchedUser.id : null,
-      email: cleanEmail,
-      role,
-      status: "active" as const,
-      invited_by: session.userId,
-    };
-
-    const { data: newMember, error: insertErr } = await admin
-      .from("organisation_members")
-      .insert(insertData)
-      .select("*")
-      .single();
-
-    if (insertErr) {
-      if (
-        insertErr.code === "23505" ||
-        insertErr.message.includes("unique constraint") ||
-        insertErr.message.includes("organisation_members_org_email_unique")
-      ) {
+      if (updErr) {
         return NextResponse.json(
-          {
-            success: false,
-            error: `${cleanEmail} is already a member of this workspace.`,
-          },
-          { status: 400 },
+          { success: false, error: `Failed to set user password: ${updErr.message}` },
+          { status: 500 },
         );
       }
-      return NextResponse.json(
-        { success: false, error: insertErr.message },
-        { status: 500 },
-      );
+    }
+
+    let memberRecord;
+    if (existing) {
+      const { data: updatedMember, error: updateErr } = await admin
+        .from("organisation_members")
+        .update({
+          user_id: matchedUser ? matchedUser.id : existing.user_id,
+          role,
+          status: "active",
+        })
+        .eq("id", existing.id)
+        .select("*")
+        .single();
+
+      if (updateErr) {
+        return NextResponse.json(
+          { success: false, error: updateErr.message },
+          { status: 500 },
+        );
+      }
+      memberRecord = updatedMember;
+    } else {
+      const insertData = {
+        organisation_id: targetOrgId,
+        user_id: matchedUser ? matchedUser.id : null,
+        email: cleanEmail,
+        role,
+        status: "active" as const,
+        invited_by: session.userId,
+      };
+
+      const { data: newMember, error: insertErr } = await admin
+        .from("organisation_members")
+        .insert(insertData)
+        .select("*")
+        .single();
+
+      if (insertErr) {
+        if (
+          insertErr.code === "23505" ||
+          insertErr.message.includes("unique constraint") ||
+          insertErr.message.includes("organisation_members_org_email_unique")
+        ) {
+          return NextResponse.json(
+            {
+              success: false,
+              error: `${cleanEmail} is already a member of this workspace.`,
+            },
+            { status: 400 },
+          );
+        }
+        return NextResponse.json(
+          { success: false, error: insertErr.message },
+          { status: 500 },
+        );
+      }
+      memberRecord = newMember;
     }
 
     // Dispatch onboarding invite email with credentials via Resend
@@ -181,7 +230,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      member: newMember,
+      member: memberRecord,
       temporaryPassword: tempPassword,
       emailSent: emailResult.success,
     });

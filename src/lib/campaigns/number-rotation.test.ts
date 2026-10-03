@@ -181,3 +181,54 @@ describe("computeNumberHealth", () => {
     });
   });
 });
+
+describe("pickHealthyNumber — retry churning (avoidNumber)", () => {
+  it("rotates to a different number on retry when previous number is provided", () => {
+    // Both +A and +B have equal load
+    const r = pickHealthyNumber(
+      base({
+        pool: ["+A", "+B"],
+        avoidNumber: "+A", // previous dial for this contact used +A
+      }),
+    );
+    expect(r).toEqual({ kind: "dial", number: "+B", degraded: false });
+  });
+
+  it("still dials the only healthy number even if it was the previous number", () => {
+    // Only +A is healthy (+B is resting)
+    const r = pickHealthyNumber(
+      base({
+        pool: ["+A", "+B"],
+        health: new Map([
+          ["+A", h(50, 30)], // 60% healthy
+          ["+B", h(50, 5)],  // 10% resting
+        ]),
+        avoidNumber: "+A",
+      }),
+    );
+    // Since +A is the only healthy number, it falls back to +A rather than resting +B
+    expect(r).toEqual({ kind: "dial", number: "+A", degraded: false });
+  });
+
+  it("rotates evenly across 3 numbers in a sequential batch", () => {
+    const pool = ["+A", "+B", "+C"];
+    const batchUsage = new Map<string, number>();
+    const picks: string[] = [];
+
+    for (let i = 0; i < 6; i++) {
+      const r = pickHealthyNumber(
+        base({
+          pool,
+          batchUsage,
+        }),
+      );
+      if (r.kind === "dial") {
+        picks.push(r.number);
+        batchUsage.set(r.number, (batchUsage.get(r.number) ?? 0) + 1);
+      }
+    }
+
+    expect(picks).toEqual(["+A", "+B", "+C", "+A", "+B", "+C"]);
+  });
+});
+

@@ -97,6 +97,11 @@ def clean_indian_name(raw_name: str | None, first_name_only: bool = True) -> str
     if not formatted_words:
         return ""
 
+    # Discard single letters / initials-only names (e.g. "R T", "R", "A B C")
+    has_real_word = any(len(re.sub(r'[^a-zA-Z\u0900-\u097F]', '', w)) >= 2 for w in formatted_words)
+    if not has_real_word:
+        return ""
+
     if first_name_only:
         # If the first word is a single initial (like "K." or "K") and there is a subsequent full word,
         # pick the first full name (e.g., "K. Suresh" -> "Suresh")
@@ -104,9 +109,12 @@ def clean_indian_name(raw_name: str | None, first_name_only: bool = True) -> str
             clean_word = re.sub(r'[^a-zA-Z\u0900-\u097F]', '', word)
             if len(clean_word) >= 2:
                 return word
-        return formatted_words[0]
+        return ""
 
-    return " ".join(formatted_words)
+    full = " ".join(formatted_words)
+    if len(re.sub(r'[^a-zA-Z\u0900-\u097F]', '', full)) < 2:
+        return ""
+    return full
 
 def detect_name_column(fieldnames: list[str]) -> str | None:
     lower_fields = [f.lower().strip() for f in fieldnames]
@@ -146,14 +154,17 @@ def process_csv(input_path: str, output_path: str, column_name: str | None = Non
 
     cleaned_count = 0
     sample_cleanups = []
+    blank_cleaned = []
 
-    for row in rows:
+    for idx, row in enumerate(rows, start=2):
         orig = row.get(target_col) or ""
         cleaned = clean_indian_name(orig, first_name_only=first_name_only)
         if cleaned != orig:
             cleaned_count += 1
             if len(sample_cleanups) < 6 and orig:
                 sample_cleanups.append((orig, cleaned or "(empty)"))
+        if not cleaned:
+            blank_cleaned.append((idx, orig))
         row[target_col] = cleaned
 
     if sample_cleanups:
@@ -161,6 +172,16 @@ def process_csv(input_path: str, output_path: str, column_name: str | None = Non
         for orig, clean in sample_cleanups:
             print(f"  • {orig} ➔ {clean}")
         print()
+
+    if blank_cleaned:
+        print(f"\n DispositionERROR: {len(blank_cleaned)} customer name(s) are blank after cleaning for Voice AI!", file=sys.stderr)
+        print(" (Please manually update in sheet)\n", file=sys.stderr)
+        for row_num, orig_val in blank_cleaned[:5]:
+            display_orig = orig_val if orig_val.strip() else "(empty in CSV)"
+            print(f"   • Row {row_num}: '{display_orig}' ➔ (blank)", file=sys.stderr)
+        if len(blank_cleaned) > 5:
+            print(f"   ... and {len(blank_cleaned) - 5} more blank row(s)", file=sys.stderr)
+        print(file=sys.stderr)
 
     with open(output_path, mode="w", encoding="utf-8-sig", newline="") as outfile:
         writer = csv.DictWriter(outfile, fieldnames=fieldnames)
