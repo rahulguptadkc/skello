@@ -5,6 +5,7 @@ import { bolnaLeadPayloadSchema, extractLead } from "@/lib/bolna/extract";
 import { recordInboundCall } from "@/lib/bolna/inbound";
 import { clientIpAllowed } from "@/lib/bolna/ip-allowlist";
 import { recordOutboundResult } from "@/lib/bolna/outbound";
+import { createAdminClient } from "@/lib/supabase/admin";
 import {
   resolveOrgByAgentId,
   resolveOrgByDialedNumber,
@@ -172,10 +173,37 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  console.log(
+    "[bolna webhook payload] Received post-call data from Bolna:",
+    JSON.stringify(
+      {
+        status: parsed.data.status,
+        duration: parsed.data.conversation_duration,
+        summary: parsed.data.summary,
+        extracted_data: parsed.data.extracted_data,
+        telephony_data: parsed.data.telephony_data,
+      },
+      null,
+      2,
+    ),
+  );
   const callType = parsed.data.telephony_data?.call_type;
   const externalId = pickExternalId(body as Record<string, unknown>);
 
-  if (callType === "outbound") {
+  let isOutbound = callType === "outbound";
+  if (!isOutbound && externalId) {
+    const admin = createAdminClient();
+    const { data: existingCall } = await admin
+      .from("calls")
+      .select("direction")
+      .eq("bolna_call_id", externalId)
+      .maybeSingle<{ direction: string }>();
+    if (existingCall?.direction === "outbound") {
+      isOutbound = true;
+    }
+  }
+
+  if (isOutbound) {
     if (!externalId) {
       return NextResponse.json(
         { error: "Missing execution id" },
@@ -187,6 +215,9 @@ export async function POST(request: NextRequest) {
         externalId,
         payload: parsed.data,
       });
+      console.log(
+        `[inbound webhook] Outbound call webhook processed successfully for execution ${externalId}: callId=${result.callId}, matched=${result.matchedExisting}`,
+      );
       return NextResponse.json(
         { ok: true, callId: result.callId, matched: result.matchedExisting },
         { status: 200 },

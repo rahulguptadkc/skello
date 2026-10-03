@@ -5,16 +5,47 @@ import {
   activeNavHref,
   breadcrumbsFor,
   flattenNav,
+  getNavSections,
+  getOutreachSection,
   isNavActive,
   isNavBranchActive,
 } from "./nav";
 
-const campaigns = NAV_SECTIONS.flatMap((s) => s.items).find(
-  (i) => i.href === "/campaigns",
-)!;
 const leads = NAV_SECTIONS.flatMap((s) => s.items).find(
   (i) => i.href === "/leads",
 )!;
+
+describe("getOutreachSection / vertical separation", () => {
+  it("renders Real Estate outreach tabs and excludes E-Commerce tabs", () => {
+    const section = getOutreachSection("real_estate");
+    const labels = section.items.map((i) => i.label);
+    const hrefs = section.items.map((i) => i.href);
+
+    expect(labels).toEqual(["Pre-Sales", "Reactivate", "Tranche Recovery"]);
+    expect(hrefs).toEqual([
+      "/campaigns/templates/pre-sales",
+      "/campaigns",
+      "/campaigns/templates/tranche-recovery",
+    ]);
+    expect(labels).not.toContain("Cart Recovery");
+    expect(labels).not.toContain("COD Confirmation");
+  });
+
+  it("renders E-Commerce outreach tabs and excludes Real Estate tabs", () => {
+    const section = getOutreachSection("ecommerce");
+    const labels = section.items.map((i) => i.label);
+    const hrefs = section.items.map((i) => i.href);
+
+    expect(labels).toEqual(["Campaigns", "Cart Recovery", "COD Confirmation"]);
+    expect(hrefs).toEqual([
+      "/campaigns",
+      "/campaigns/templates/cart-recovery",
+      "/campaigns/templates/cod-confirmation",
+    ]);
+    expect(labels).not.toContain("Pre-Sales");
+    expect(labels).not.toContain("Tranche Recovery");
+  });
+});
 
 describe("activeNavHref", () => {
   it("resolves an exact match", () => {
@@ -25,9 +56,19 @@ describe("activeNavHref", () => {
     expect(activeNavHref("/campaigns/9f3a")).toBe("/campaigns");
   });
 
-  // The bug this module exists to kill: /campaigns and its sub-item both lit up.
-  it("prefers the deepest match over the parent", () => {
-    expect(activeNavHref("/campaigns/templates/cart-recovery")).toBe(
+  it("prefers the deepest match over the parent for Real Estate", () => {
+    const reSections = getNavSections("real_estate");
+    expect(activeNavHref("/campaigns/templates/pre-sales", reSections)).toBe(
+      "/campaigns/templates/pre-sales",
+    );
+    expect(activeNavHref("/campaigns/templates/tranche-recovery", reSections)).toBe(
+      "/campaigns/templates/tranche-recovery",
+    );
+  });
+
+  it("prefers the deepest match over the parent for E-Commerce", () => {
+    const ecomSections = getNavSections("ecommerce");
+    expect(activeNavHref("/campaigns/templates/cart-recovery", ecomSections)).toBe(
       "/campaigns/templates/cart-recovery",
     );
   });
@@ -42,24 +83,25 @@ describe("activeNavHref", () => {
 });
 
 describe("isNavActive", () => {
-  it("lights exactly one entry on a sub-item route", () => {
-    const path = "/campaigns/templates/cart-recovery";
-    const lit = flattenNav().filter((i) => isNavActive(path, i.href));
+  it("lights exactly one entry on a Real Estate sub-item route", () => {
+    const path = "/campaigns/templates/pre-sales";
+    const reSections = getNavSections("real_estate");
+    const lit = flattenNav(reSections).filter((i) => isNavActive(path, i.href, reSections));
     expect(lit.map((i) => i.href)).toEqual([path]);
   });
 
-  it("does not light the parent when a child owns the route", () => {
-    expect(isNavActive("/campaigns/templates/cod-confirmation", "/campaigns")).toBe(
-      false,
-    );
+  it("lights exactly one entry on an E-Com sub-item route", () => {
+    const path = "/campaigns/templates/cart-recovery";
+    const ecomSections = getNavSections("ecommerce");
+    const lit = flattenNav(ecomSections).filter((i) => isNavActive(path, i.href, ecomSections));
+    expect(lit.map((i) => i.href)).toEqual([path]);
   });
 });
 
 describe("isNavBranchActive", () => {
-  // The production nav is currently flat — Campaigns, Cart Recovery and COD
-  // Confirmation are siblings. The helper still has to work, because the
-  // collapsed rail hides children and `NavItem.children` is still supported,
-  // so this exercises it against a local fixture rather than deleting it.
+  const ecomSections = getNavSections("ecommerce");
+  const ecomCampaigns = ecomSections.flatMap((s) => s.items).find((i) => i.href === "/campaigns")!;
+
   const nested = [
     {
       label: "Outreach",
@@ -67,12 +109,12 @@ describe("isNavBranchActive", () => {
         {
           href: "/campaigns",
           label: "Campaigns",
-          icon: campaigns.icon,
+          icon: ecomCampaigns.icon,
           children: [
             {
               href: "/campaigns/templates/cart-recovery",
               label: "Cart Recovery",
-              icon: campaigns.icon,
+              icon: ecomCampaigns.icon,
             },
           ],
         },
@@ -91,15 +133,15 @@ describe("isNavBranchActive", () => {
   });
 
   it("is false for an unrelated branch", () => {
-    expect(isNavBranchActive("/campaigns/templates/cart-recovery", leads)).toBe(
+    expect(isNavBranchActive("/campaigns/templates/cart-recovery", leads, ecomSections)).toBe(
       false,
     );
   });
 
   // Flat nav: a sibling must not light up its neighbour.
-  it("does not treat a sibling as part of the branch", () => {
+  it("does not treat a sibling as part of the branch in flat nav", () => {
     expect(
-      isNavBranchActive("/campaigns/templates/cart-recovery", campaigns),
+      isNavBranchActive("/campaigns/templates/cart-recovery", ecomCampaigns, ecomSections),
     ).toBe(false);
   });
 });
@@ -111,12 +153,10 @@ describe("breadcrumbsFor", () => {
     ]);
   });
 
-  // Cart Recovery lives under /campaigns/… in the URL but is a top-level nav
-  // entry, so it gets one crumb — and `Breadcrumbs` renders nothing at one
-  // crumb, which is right: the page's own <h1> already says "Cart Recovery".
   it("gives a URL-nested but nav-top-level page a single crumb", () => {
-    expect(breadcrumbsFor("/campaigns/templates/cart-recovery")).toEqual([
-      { label: "Cart Recovery", href: "/campaigns/templates/cart-recovery" },
+    const reSections = getNavSections("real_estate");
+    expect(breadcrumbsFor("/campaigns/templates/pre-sales", reSections)).toEqual([
+      { label: "Pre-Sales", href: "/campaigns/templates/pre-sales" },
     ]);
   });
 

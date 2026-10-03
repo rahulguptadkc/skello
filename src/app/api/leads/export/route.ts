@@ -1,40 +1,32 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
-import { leadActivityFilterSchema } from "@/lib/validations/lead-activity";
 import {
-  type CustomFieldsCarrier,
-  type DiscoveredCustomField,
-  discoverCustomFields,
-  pickCustomFieldValue,
-  stringifyCustomValue,
-} from "@/lib/csv-custom-fields";
+  type LeadActivityFilter,
+  leadActivityFilterSchema,
+} from "@/lib/validations/lead-activity";
 import { logSkeloError } from "@/lib/errors";
 import { requireSession } from "@/lib/auth/session";
-import { type CsvColumn, toCsv, withBom } from "@/lib/csv";
+import { toCsv, withBom } from "@/lib/csv";
 import { checkRateLimit, tooManyRequestsResponse } from "@/lib/rate-limit";
-import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
+import {
+  buildLeadExportCsvColumns,
+  fetchAgentLabels,
+  getExportExtractionDefinitions,
+  type UnifiedCallRecord,
+  type UnifiedLeadRecord,
+} from "@/lib/export/shared-export-columns";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Per-export row cap. We fetch CAP+1 from the RPC and use the +1 sentinel
-// to flag truncation — same trick as the calls export route — so the
-// dialog can warn that the filter still has more matches than this file
-// contains.
-const EXPORT_CAP = 10_000;
+// Per-export row cap. We paginate Supabase PostgREST in batches
+// (since PostgREST defaults to a 1,000 max-rows per-request limit) up to EXPORT_CAP
+// so that large datasets are fully exported without silent row truncations.
+const EXPORT_CAP = 50_000;
+const BATCH_SIZE = 1_000;
 
-// Backend contract: the frontend resolves a preset (or custom date inputs)
-// into concrete from/to ISO timestamps and posts them as query params.
-// `range` is carried through for the filename only; the query uses
-// from/to. `null` on either bound means "open" on that side.
-//
-// `filters` and `search` mirror the leads-table state and flow into the
-// `lead_call_activity` RPC via p_filters / p_search. The route does NOT
-// validate the filter set's referential integrity (key existence in the
-// catalog) — the RPC silently drops filters whose `source` it doesn't
-// recognise, and any wrong-type comparison turns into "no rows match"
-// (safer than returning everything by accident).
 const isoDatetimeSchema = z.string().datetime({ offset: true });
 const filtersJsonSchema = z
   .string()
@@ -54,6 +46,7 @@ const filtersJsonSchema = z
       return z.NEVER;
     }
   });
+
 const exportInputSchema = z.object({
   from: isoDatetimeSchema.optional(),
   to: isoDatetimeSchema.optional(),
@@ -62,14 +55,15 @@ const exportInputSchema = z.object({
   search: z.string().trim().max(200).optional(),
 });
 
-// The RPC `lead_call_activity` returns LeadRow's fields + the per-row call
-// snapshot (latest_call_interest/summary/recording_url) + the aggregate
-// columns. The export only consumes the LeadRow fields here; downstream
-// code doesn't read the aggregates so they're typed as unknown extras.
-interface LeadRow extends CustomFieldsCarrier {
+const LEAD_COLUMNS =
+  "id, created_at, updated_at, name, phone, phone_normalized, current_intent, " +
+  "current_intent_score, source, status, pending_action, notes, city, pincode, " +
+  "owner_label, lead_data, custom_data";
+
+interface RawLeadRow {
   id: string;
   created_at: string;
-  updated_at: string;
+  updated_at?: string;
   name: string | null;
   phone: string | null;
   current_intent: string | null;
@@ -79,115 +73,15 @@ interface LeadRow extends CustomFieldsCarrier {
   notes: string | null;
   city: string | null;
   pincode: string | null;
-}
-
-// Per-call snapshot fields surfaced into the CSV. recording_url was
-// intentionally dropped — exporters don't need playback URLs, and surfacing
-// them invites leaking signed audio links to anyone who downloads the CSV.
-interface CallSnapshot {
-  interest: string | null;
-  summary: string | null;
-  actionable: string | null;
-  customer_status: string | null;
-  visit_scheduled_at: string | null;
-}
-
-interface ExportRow extends LeadRow {
-  interest: string | null;
-  summary: string | null;
-  actionable: string | null;
-  customer_status: string | null;
-  visit_scheduled_at: string | null;
-  wants_to_connect_on_watsapp: boolean | null;
-}
-
-function pickJsonString(blob: Record<string, unknown> | null, key: string): string | null {
-  if (!blob) return null;
-  const v = blob[key];
-  if (typeof v === "string" && v.trim().length > 0) return v;
-  return null;
-}
-
-function pickJsonBool(blob: Record<string, unknown> | null, key: string): boolean | null {
-  if (!blob) return null;
-  const v = blob[key];
-  if (typeof v === "boolean") return v;
-  if (typeof v === "string") {
-    const lower = v.toLowerCase().trim();
-    if (["true", "yes", "1"].includes(lower)) return true;
-    if (["false", "no", "0"].includes(lower)) return false;
-  }
-  return null;
-}
-
-function pickJsonDate(blob: Record<string, unknown> | null, key: string): string | null {
-  const v = pickJsonString(blob, key);
-  if (!v) return null;
-  const d = new Date(v);
-  if (Number.isNaN(d.getTime())) return null;
-  return d.toISOString();
-}
-
-// lead_data keys that already get a dedicated static column above
-// (Interest, Customer Type, Visit Scheduled, Wants WA). Skipping them
-// in discovery prevents the same value from being duplicated as a
-// dynamic column.
-const SURFACED_LEAD_DATA_KEYS = new Set([
-  "interest",
-  "customer_status",
-  "connect_on_whatsapp",
-  "date_and_time_of_visit",
-]);
-
-const STATIC_CSV_COLUMNS: CsvColumn<ExportRow>[] = [
-  { header: "ID", value: (l) => l.id },
-  { header: "Created At", value: (l) => l.created_at },
-  { header: "Name", value: (l) => l.name },
-  { header: "Phone", value: (l) => l.phone },
-  { header: "Interest", value: (l) => l.interest },
-  { header: "Latest Call Summary", value: (l) => l.summary },
-  { header: "Intent", value: (l) => l.current_intent },
-  { header: "Status", value: (l) => l.status },
-  { header: "Source", value: (l) => l.source },
-  { header: "Customer Type", value: (l) => l.customer_status },
-  { header: "City", value: (l) => l.city },
-  { header: "Pincode", value: (l) => l.pincode },
-  { header: "Visit Scheduled", value: (l) => l.visit_scheduled_at },
-  { header: "Pending Action", value: (l) => l.pending_action },
-  { header: "Wants WA", value: (l) => l.wants_to_connect_on_watsapp },
-  { header: "Notes", value: (l) => l.notes },
-];
-
-// Catalog-derived columns slot in just before "Notes" so the trailing
-// free-text column keeps its position at the right edge of the sheet
-// (admins are used to scrolling all the way over for it).
-function buildCsvColumns(
-  fields: DiscoveredCustomField[],
-): CsvColumn<ExportRow>[] {
-  const dynamicColumns: CsvColumn<ExportRow>[] = fields.map((f) => ({
-    header: f.header,
-    value: (row) => stringifyCustomValue(pickCustomFieldValue(row, f)),
-  }));
-  const notesIdx = STATIC_CSV_COLUMNS.findIndex(
-    (col) => col.header === "Notes",
-  );
-  if (notesIdx === -1) {
-    return [...STATIC_CSV_COLUMNS, ...dynamicColumns];
-  }
-  return [
-    ...STATIC_CSV_COLUMNS.slice(0, notesIdx),
-    ...dynamicColumns,
-    ...STATIC_CSV_COLUMNS.slice(notesIdx),
-  ];
+  owner_label: string | null;
+  lead_data: Record<string, unknown> | null;
+  custom_data: Record<string, Record<string, unknown>> | null;
 }
 
 export async function GET(request: NextRequest) {
   const session = await requireSession();
 
-  // 5 exports per minute per user. Each request runs the full
-  // lead_call_activity RPC up to 10k rows; the cap keeps a tab-spamming
-  // user from saturating the database without being so tight that the
-  // dialog's count-then-export flow gets blocked.
+  // 5 exports per minute per user. Sized to prevent database saturation.
   const rl = await checkRateLimit({
     key: `leads-export:user:${session.userId}`,
     windowSeconds: 60,
@@ -217,70 +111,77 @@ export async function GET(request: NextRequest) {
   }
   const { from, to, range, filters, search } = parsedInput.data;
 
-  const supabase = await createClient();
-  // Use the same RPC as the leads table so the export's WHERE clause stays
-  // in lockstep with the in-app filter logic — same catalog awareness for
-  // dynamic JSONB fields, same column allowlist, same date-range handling.
-  // Sort by created_at desc to match the route's pre-RPC behaviour (newest
-  // captured leads first), and pull include_zero_calls=true since exporters
-  // generally want every lead in the window, not just contacted ones.
-  const { data, error } = await supabase.rpc("lead_call_activity", {
-    p_org_id: session.organisation.id,
-    p_org_slug: session.organisation.slug,
-    p_include_zero_calls: true,
-    p_limit: EXPORT_CAP + 1,
-    p_offset: 0,
-    p_filters: filters ?? [],
-    p_sort_by: {
-      source: "column",
-      key: "created_at",
-      dir: "desc",
-      type: "date",
-    },
-    p_search: search ?? null,
-    p_from: from ?? null,
-    p_to: to ?? null,
-  });
-  if (error) {
-    const message = logSkeloError("EXPORT", "Lead export query failed", {
-      organisationId: session.organisation.id,
-      cause: error,
-    });
-    return NextResponse.json({ error: message }, { status: 500 });
+  const admin = createAdminClient();
+  const allLeads: RawLeadRow[] = [];
+  let offset = 0;
+  let hasMore = true;
+  let truncated = false;
+
+  while (hasMore) {
+    let query = admin
+      .from("leads")
+      .select(LEAD_COLUMNS)
+      .eq("organisation_id", session.organisation.id)
+      .order("created_at", { ascending: false })
+      .range(offset, offset + BATCH_SIZE - 1);
+
+    if (from) query = query.gte("created_at", from);
+    if (to) query = query.lte("created_at", to);
+
+    if (search && search.trim().length > 0) {
+      const safe = search.replace(/[%,]/g, " ").trim();
+      if (safe.length >= 1) {
+        query = query.or(`name.ilike.%${safe}%,phone.ilike.%${safe}%`);
+      }
+    }
+
+    if (filters && filters.length > 0) {
+      query = applyLeadFilters(query, filters);
+    }
+
+    const { data, error } = await query.returns<RawLeadRow[]>();
+    if (error) {
+      const message = logSkeloError("EXPORT", "Lead export query failed", {
+        organisationId: session.organisation.id,
+        cause: error,
+      });
+      return NextResponse.json({ error: message }, { status: 500 });
+    }
+
+    const batch = data ?? [];
+    allLeads.push(...batch);
+
+    if (batch.length < BATCH_SIZE) {
+      hasMore = false;
+    } else if (allLeads.length >= EXPORT_CAP) {
+      hasMore = false;
+      truncated = true;
+    } else {
+      offset += BATCH_SIZE;
+    }
   }
 
-  // supabase-js generates the RPC return as the row union rather than the
-  // set type, so we widen-then-narrow rather than chaining .returns<T[]>().
-  const raw = (data ?? []) as LeadRow[];
-  const truncated = raw.length > EXPORT_CAP;
-  const leads = truncated ? raw.slice(0, EXPORT_CAP) : raw;
+  const leads = truncated ? allLeads.slice(0, EXPORT_CAP) : allLeads;
 
-  // Batch-fetch the most recent call per lead for the snapshot fields.
-  // Single round trip; DISTINCT ON pinned via in-memory pick to avoid an
-  // RPC. Acceptable up to ~10k rows.
+  // Batch-fetch latest call per lead
   const snapshots = await fetchLatestCallSnapshots(
+    admin,
     session.organisation.id,
     leads.map((l) => l.id),
   );
 
-  const rows: ExportRow[] = leads.map((l) => {
-    const snap = snapshots.get(l.id);
-    return {
-      ...l,
-      interest: snap?.interest ?? pickJsonString(l.lead_data, "interest"),
-      summary: snap?.summary ?? null,
-      actionable: snap?.actionable ?? null,
-      customer_status:
-        snap?.customer_status ?? pickJsonString(l.lead_data, "customer_status"),
-      visit_scheduled_at:
-        snap?.visit_scheduled_at ??
-        pickJsonDate(l.lead_data, "date_and_time_of_visit"),
-      wants_to_connect_on_watsapp: pickJsonBool(l.lead_data, "connect_on_whatsapp"),
-    };
-  });
+  const rows: UnifiedLeadRecord[] = leads.map((l) => ({
+    ...l,
+    latestCall: snapshots.get(l.id) ?? null,
+  }));
 
-  const discoveredFields = discoverCustomFields(leads, SURFACED_LEAD_DATA_KEYS);
-  const csvColumns = buildCsvColumns(discoveredFields);
+  const extractions = await getExportExtractionDefinitions(
+    admin,
+    session.organisation.id,
+    rows,
+  );
+
+  const csvColumns = buildLeadExportCsvColumns(extractions);
   const body = withBom(toCsv(rows, csvColumns));
   const stamp = new Date().toISOString().slice(0, 10);
   const rangeLabel = (range ?? "custom").replace(/[^a-z0-9_-]+/gi, "_");
@@ -292,8 +193,6 @@ export async function GET(request: NextRequest) {
       "Content-Type": "text/csv; charset=utf-8",
       "Content-Disposition": `attachment; filename="${filename}"`,
       "Cache-Control": "no-store",
-      // Forensic + UX headers: the dialog reads these to surface a toast
-      // confirming row count and (when relevant) the cap being hit.
       "X-Export-Cap": String(EXPORT_CAP),
       "X-Export-Rows": String(leads.length),
       "X-Export-Truncated": truncated ? "true" : "false",
@@ -301,45 +200,111 @@ export async function GET(request: NextRequest) {
   });
 }
 
-async function fetchLatestCallSnapshots(
-  organisationId: string,
-  leadIds: string[],
-): Promise<Map<string, CallSnapshot>> {
-  const out = new Map<string, CallSnapshot>();
-  if (leadIds.length === 0) return out;
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from("calls")
-    .select(
-      "lead_id, interest, summary, actionable, customer_status, visit_scheduled_at, started_at",
-    )
-    .eq("organisation_id", organisationId)
-    .in("lead_id", leadIds)
-    .order("started_at", { ascending: false });
-  if (error) {
-    logSkeloError("EXPORT", "Latest-call snapshot fetch failed (CSV will omit snapshot columns)", {
-      organisationId,
-      cause: error,
-    });
-    return out;
-  }
-  for (const row of (data ?? []) as Array<{
-    lead_id: string;
-    interest: string | null;
-    summary: string | null;
-    actionable: string | null;
-    customer_status: string | null;
-    visit_scheduled_at: string | null;
-  }>) {
-    if (!out.has(row.lead_id)) {
-      out.set(row.lead_id, {
-        interest: row.interest,
-        summary: row.summary,
-        actionable: row.actionable,
-        customer_status: row.customer_status,
-        visit_scheduled_at: row.visit_scheduled_at,
-      });
+function applyLeadFilters(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  query: any,
+  filters: LeadActivityFilter[],
+) {
+  let q = query;
+  for (const f of filters) {
+    if (f.source === "column") {
+      if (f.op === "eq") q = q.eq(f.key, f.value);
+      else if (f.op === "neq") q = q.neq(f.key, f.value);
+      else if (f.op === "contains") q = q.ilike(f.key, `%${f.value}%`);
+      else if (f.op === "lt") q = q.lt(f.key, f.value);
+      else if (f.op === "lte") q = q.lte(f.key, f.value);
+      else if (f.op === "gt") q = q.gt(f.key, f.value);
+      else if (f.op === "gte") q = q.gte(f.key, f.value);
+    } else if (f.source === "lead_data") {
+      const op = f.op === "contains" ? "ilike" : f.op;
+      const val = f.op === "contains" ? `%${f.value}%` : f.value;
+      q = q.filter(`lead_data->>${f.key}`, op, val);
+    } else if (f.source === "custom_data") {
+      const op = f.op === "contains" ? "ilike" : f.op;
+      const val = f.op === "contains" ? `%${f.value}%` : f.value;
+      const path = f.category
+        ? `custom_data->${f.category}->>${f.key}`
+        : `custom_data->>${f.key}`;
+      q = q.filter(path, op, val);
     }
   }
+  return q;
+}
+
+async function fetchLatestCallSnapshots(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  admin: any,
+  organisationId: string,
+  leadIds: string[],
+): Promise<Map<string, UnifiedCallRecord>> {
+  const out = new Map<string, UnifiedCallRecord>();
+  if (leadIds.length === 0) return out;
+
+  const CHUNK_SIZE = 100;
+  const chunks: string[][] = [];
+  for (let i = 0; i < leadIds.length; i += CHUNK_SIZE) {
+    chunks.push(leadIds.slice(i, i + CHUNK_SIZE));
+  }
+
+  const CONCURRENCY = 8;
+  for (let i = 0; i < chunks.length; i += CONCURRENCY) {
+    const pool = chunks.slice(i, i + CONCURRENCY);
+    await Promise.all(
+      pool.map(async (chunk) => {
+        let offset = 0;
+        let hasMore = true;
+        const BATCH = 1_000;
+
+        while (hasMore) {
+          const { data, error } = await admin
+            .from("calls")
+            .select(
+              "id, bolna_call_id, lead_id, direction, status, agent_id, to_phone, from_phone, started_at, duration_seconds, summary, transcript, call_outcome, interest, lead_intent_extracted, customer_status, actionable, visit_scheduled_at, connect_on_whatsapp, lead_data, custom_data",
+            )
+            .eq("organisation_id", organisationId)
+            .in("lead_id", chunk)
+            .order("started_at", { ascending: false })
+            .range(offset, offset + BATCH - 1);
+
+          if (error) {
+            logSkeloError("EXPORT", "Latest-call snapshot fetch failed", {
+              organisationId,
+              cause: error,
+            });
+            break;
+          }
+
+          const rows = (data ?? []) as Array<UnifiedCallRecord & { lead_id: string }>;
+          for (const row of rows) {
+            if (!out.has(row.lead_id)) {
+              out.set(row.lead_id, row);
+            }
+          }
+
+          if (rows.length < BATCH) {
+            hasMore = false;
+          } else {
+            offset += BATCH;
+          }
+        }
+      }),
+    );
+  }
+
+  // Resolve agent labels
+  const agentIds = Array.from(
+    new Set(
+      Array.from(out.values())
+        .map((c) => c.agent_id)
+        .filter((id): id is string => Boolean(id)),
+    ),
+  );
+  const agentLabels = await fetchAgentLabels(admin, organisationId, agentIds);
+  for (const c of out.values()) {
+    if (c.agent_id) {
+      c.agent_label = agentLabels.get(c.agent_id) ?? null;
+    }
+  }
+
   return out;
 }

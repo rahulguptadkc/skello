@@ -36,6 +36,7 @@ export function VoiceAgentBanner({ integration }: Props) {
     );
   }
 
+  // eslint-disable-next-line react-hooks/purity
   const ageMs = Date.now() - new Date(integration.created_at).getTime();
   if (ageMs > FRESH_WINDOW_MS) return null;
 

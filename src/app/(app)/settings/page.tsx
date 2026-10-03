@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { PlugZapIcon, UploadCloudIcon } from "lucide-react";
+import { PlugZapIcon, UploadCloudIcon, UsersIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -12,18 +12,11 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
+import { SettingsNavTabs } from "@/components/app/settings/settings-nav-tabs";
 import { requireSession } from "@/lib/auth/session";
 
 export const metadata = { title: "Settings · Skelo" };
 
-/**
- * Workspace, data and account.
- *
- * The voice-agent, WhatsApp and Shopify connection cards used to live here,
- * below the workspace form — which put "where do my leads come from" in the
- * same place as "change my email", and left no room for the setup instructions
- * and delivery logs a webhook integration needs. They now have /integrations.
- */
 export default async function SettingsPage() {
   const session = await requireSession();
 
@@ -34,9 +27,11 @@ export default async function SettingsPage() {
           Settings
         </h1>
         <p className="text-sm leading-relaxed text-muted-foreground">
-          Manage your workspace and account.
+          Manage your workspace, team members, and account.
         </p>
       </header>
+
+      <SettingsNavTabs />
 
       <Card>
         <CardHeader>
@@ -51,6 +46,18 @@ export default async function SettingsPage() {
             <Label htmlFor="org-slug">Slug</Label>
             <Input id="org-slug" defaultValue={session.organisation.slug} disabled />
           </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor="org-industry">Business Type</Label>
+            <Input
+              id="org-industry"
+              defaultValue={
+                session.organisation.industry === "ecommerce"
+                  ? "E-Commerce (Cart Recovery, COD & Shopify)"
+                  : "Real Estate (Pre-Sales, Reactivate & Tranche Recovery)"
+              }
+              disabled
+            />
+          </div>
           <p className="text-xs text-muted-foreground">
             Workspace edits are locked in this preview build.
           </p>
@@ -61,9 +68,25 @@ export default async function SettingsPage() {
 
       <Card>
         <CardHeader>
+          <CardTitle>Team & Roles</CardTitle>
+          <CardDescription>
+            Onboard team members, assign admin or member roles, and manage access to this workspace.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button variant="outline" render={<Link href="/settings/team" />}>
+            <UsersIcon /> Manage Team
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Separator />
+
+      <Card>
+        <CardHeader>
           <CardTitle>Connections</CardTitle>
           <CardDescription>
-            Your voice agent, lead sources and connected stores now live on their
+            Your voice agent, lead sources and connected stores live on their
             own page, with setup steps and a delivery log for each.
           </CardDescription>
         </CardHeader>
@@ -101,8 +124,17 @@ export default async function SettingsPage() {
             <Label htmlFor="acct-email">Email</Label>
             <Input id="acct-email" defaultValue={session.email} disabled />
           </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor="acct-role">Workspace Role</Label>
+            <Input
+              id="acct-role"
+              defaultValue={session.role === "admin" ? "Admin (Workspace Manager)" : "Team Member"}
+              disabled
+            />
+          </div>
         </CardContent>
       </Card>
     </div>
   );
 }
+

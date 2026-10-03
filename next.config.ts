@@ -61,9 +61,9 @@ const nextConfig: NextConfig = {
 // build is untouched — no source-map step, no bundle injection. Source maps are
 // uploaded only when SENTRY_AUTH_TOKEN (+ org/project) are also set, so runtime
 // error capture works immediately while readable stack traces are opt-in.
-const sentryEnabled = Boolean(
-  process.env.SENTRY_DSN ?? process.env.NEXT_PUBLIC_SENTRY_DSN,
-);
+const sentryEnabled =
+  process.env.NODE_ENV === "production" &&
+  Boolean(process.env.SENTRY_DSN ?? process.env.NEXT_PUBLIC_SENTRY_DSN);
 
 export default sentryEnabled
   ? withSentryConfig(nextConfig, {

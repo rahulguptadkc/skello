@@ -66,6 +66,7 @@ export function CallDetailPane({
 
   React.useEffect(() => {
     let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setTurns(null);
     if (call.transcript_status !== "ready") {
       // Nothing to fetch — the raw blob or the empty copy covers it.

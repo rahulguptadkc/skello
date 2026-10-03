@@ -81,45 +81,60 @@ export async function GET(
   }
   const contactIds = (contacts ?? []).map((c) => c.id);
 
-  let rows: ExportRow[] = [];
+  const rows: ExportRow[] = [];
   if (contactIds.length > 0) {
-    const { data, error } = await admin
-      .from("calls")
-      .select(
-        "to_phone, status, direction, started_at, answered_at, ended_at, duration_seconds, error_message, contact:campaign_contacts!campaign_contact_id(name, attempt)",
-      )
-      .in("campaign_contact_id", contactIds)
-      .order("started_at", { ascending: false })
-      .returns<
-        Array<{
-          to_phone: string | null;
-          status: string;
-          direction: string;
-          started_at: string | null;
-          answered_at: string | null;
-          ended_at: string | null;
-          duration_seconds: number | null;
-          error_message: string | null;
-          contact: { name: string | null; attempt: number } | null;
-        }>
-      >();
+    const BATCH_SIZE = 1000;
+    let offset = 0;
+    let hasMore = true;
 
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+    while (hasMore) {
+      const { data, error } = await admin
+        .from("calls")
+        .select(
+          "to_phone, status, direction, started_at, answered_at, ended_at, duration_seconds, error_message, contact:campaign_contacts!campaign_contact_id(name, attempt)",
+        )
+        .in("campaign_contact_id", contactIds)
+        .order("started_at", { ascending: false })
+        .range(offset, offset + BATCH_SIZE - 1)
+        .returns<
+          Array<{
+            to_phone: string | null;
+            status: string;
+            direction: string;
+            started_at: string | null;
+            answered_at: string | null;
+            ended_at: string | null;
+            duration_seconds: number | null;
+            error_message: string | null;
+            contact: { name: string | null; attempt: number } | null;
+          }>
+        >();
+
+      if (error) {
+        return NextResponse.json({ error: error.message }, { status: 500 });
+      }
+
+      const batch = data ?? [];
+      const mapped = batch.map((r) => ({
+        phone: r.to_phone,
+        name: r.contact?.name ?? null,
+        attempt: r.contact?.attempt ?? null,
+        status: r.status,
+        direction: r.direction,
+        started_at: r.started_at,
+        answered_at: r.answered_at,
+        ended_at: r.ended_at,
+        duration_seconds: r.duration_seconds,
+        error_message: r.error_message,
+      }));
+      rows.push(...mapped);
+
+      if (batch.length < BATCH_SIZE || rows.length >= 50_000) {
+        hasMore = false;
+      } else {
+        offset += BATCH_SIZE;
+      }
     }
-
-    rows = (data ?? []).map((r) => ({
-      phone: r.to_phone,
-      name: r.contact?.name ?? null,
-      attempt: r.contact?.attempt ?? null,
-      status: r.status,
-      direction: r.direction,
-      started_at: r.started_at,
-      answered_at: r.answered_at,
-      ended_at: r.ended_at,
-      duration_seconds: r.duration_seconds,
-      error_message: r.error_message,
-    }));
   }
 
   const body = withBom(toCsv(rows, COLUMNS));

@@ -37,7 +37,10 @@ export interface Campaign {
   scheduled_at: string | null;
   started_at: string | null;
   completed_at: string | null;
+  workflow_id?: string | null;
+  workflow_name?: string | null;
   max_attempts: number;
+  max_connected_attempts?: number;
   // Max customer-requested callbacks ("call me later") honored per contact,
   // independent of max_attempts. 0 disables callback honoring.
   max_callbacks: number;
@@ -83,6 +86,7 @@ export interface CampaignContact {
   metadata: Record<string, unknown>;
   status: CampaignContactStatus;
   attempt: number;
+  connected_count?: number;
   // Honored callbacks so far — a budget separate from `attempt`.
   callback_count: number;
   // Consecutive all-numbers-resting deferrals (drives the backoff → least-bad

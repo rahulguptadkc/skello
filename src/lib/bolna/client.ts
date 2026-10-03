@@ -134,19 +134,71 @@ export async function initiateBolnaCall(
   }
   const fromPhone = coerceToE164(input.fromPhone);
 
+  const rawMetadata =
+    input.metadata && typeof input.metadata === "object"
+      ? { ...input.metadata }
+      : {};
+
+  const resolvedCustomer =
+    (typeof rawMetadata.customer === "string" && rawMetadata.customer.trim()) ||
+    (typeof rawMetadata.customer_name === "string" && rawMetadata.customer_name.trim()) ||
+    (typeof rawMetadata.contact_name === "string" && rawMetadata.contact_name.trim()) ||
+    (typeof rawMetadata.name === "string" && rawMetadata.name.trim()) ||
+    (typeof rawMetadata.first_name === "string" && rawMetadata.first_name.trim()) ||
+    (typeof rawMetadata.lead_name === "string" && rawMetadata.lead_name.trim()) ||
+    (typeof rawMetadata.recipient_name === "string" && rawMetadata.recipient_name.trim()) ||
+    null;
+
+  const customerNameFields = resolvedCustomer
+    ? {
+        customer: resolvedCustomer,
+        customer_name: resolvedCustomer,
+        contact_name: resolvedCustomer,
+        name: resolvedCustomer,
+        first_name: resolvedCustomer,
+        recipient_name: resolvedCustomer,
+      }
+    : {};
+
+  // Strip null and undefined values so provider doesn't omit fields or receive nulls
+  const cleanedMetadata: Record<string, unknown> = {};
+  for (const [key, val] of Object.entries(rawMetadata)) {
+    if (val !== null && val !== undefined) {
+      cleanedMetadata[key] = val;
+    }
+  }
+
+  const finalMetadata = {
+    ...cleanedMetadata,
+    ...customerNameFields,
+  };
+
   const requestBody = {
     agent_id: input.agentId,
     recipient_phone_number: recipient,
     ...(fromPhone ? { from_phone_number: fromPhone } : {}),
-    ...(input.metadata ? { user_data: input.metadata } : {}),
+    ...(resolvedCustomer
+      ? {
+          customer: resolvedCustomer,
+          customer_name: resolvedCustomer,
+        }
+      : {}),
+    ...(Object.keys(finalMetadata).length > 0
+      ? {
+          user_data: finalMetadata,
+          recipient_data: finalMetadata,
+        }
+      : {}),
   };
 
-  // Lightweight trace — no raw phone numbers in prod logs. If you need to
-  // debug a specific dial, expand this temporarily and remove before commit.
-  console.log("[bolna] POST /call", {
-    agent: input.agentId,
-    recipientPrefixed: recipient.startsWith("+"),
-    hasFromPhone: !!fromPhone,
+  console.log("[bolna] POST /call payload dispatch:", {
+    agent_id: input.agentId,
+    recipient_phone: recipient ? `${recipient.slice(0, 4)}****${recipient.slice(-4)}` : null,
+    customer: resolvedCustomer,
+    customer_name: resolvedCustomer,
+    passing_customer: Boolean(resolvedCustomer),
+    user_data_keys: Object.keys(finalMetadata),
+    has_from_phone: Boolean(fromPhone),
   });
 
   const response = await fetch(`${bolnaBaseUrl()}/call`, {

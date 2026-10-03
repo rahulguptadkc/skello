@@ -135,16 +135,29 @@ export function normalizeOutcomeKey(raw: string): string {
 // through untouched here.
 const OUTCOME_ALIASES: Record<string, CallOutcome> = {
   uninterested: "not_interested",
+  no: "not_interested",
+  nahi: "not_interested",
+  na: "not_interested",
+  not_interested: "not_interested",
   callback: "callback_requested",
   call_back: "callback_requested",
   call_later: "callback_requested",
   call_me_later: "callback_requested",
+  call_again: "callback_requested",
   dnc: "do_not_call",
   remove_me: "do_not_call",
   meeting_scheduled: "meeting_booked",
   appointment_booked: "meeting_booked",
   booked: "meeting_booked",
   undecided: "no_decision",
+  yes: "interested",
+  ha: "interested",
+  haan: "interested",
+  no_contact: "no_conversation",
+  no_conv: "no_conversation",
+  no_response: "no_conversation",
+  hung_up: "no_conversation",
+  call_dropped: "no_conversation",
 };
 
 // Resolve the agent's raw `call_outcome` string to a stable outcome key. Known
@@ -176,6 +189,24 @@ export interface ExtractedLead {
   summary: string | null;
 }
 
+export function findFieldValue(
+  record: Record<string, BolnaField> | undefined,
+  ...candidateKeys: string[]
+): string | null {
+  if (!record) return null;
+  const normCandidates = candidateKeys.map((k) =>
+    k.toLowerCase().replace(/[^a-z0-9]/g, ""),
+  );
+  for (const [key, field] of Object.entries(record)) {
+    const normKey = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (normCandidates.includes(normKey)) {
+      const val = pickValue(field);
+      if (val !== null && val.trim() !== "") return val.trim();
+    }
+  }
+  return null;
+}
+
 export function extractLead(
   leadData: Record<string, BolnaField>,
 ): ExtractedLead {
@@ -186,25 +217,81 @@ export function extractLead(
     if (typeof field?.confidence === "number") confidence[key] = field.confidence;
   }
 
-  // `interest` is read straight from the agent's `interest` key. We no
-  // longer alias the legacy `product` key onto it — every key is captured
-  // as-is (a stray `product` flows through to custom_data via the generic
-  // path), so consolidating two keys into one column here only hid where
-  // the data actually came from. Keep keys separate; let admins promote.
+  const outcomeRaw =
+    findFieldValue(ld, "call_outcome", "outcome", "callOutcome") ||
+    findFieldValue(ld, "customer_status", "status") ||
+    findFieldValue(ld, "lead_intent", "intent") ||
+    findFieldValue(ld, "interest") ||
+    findFieldValue(ld, "disposition");
+
   return {
-    business_slug: pickValue(ld.business_slug),
-    name: pickValue(ld.name),
-    interest: pickValue(ld.interest),
-    customer_status: pickValue(ld.customer_status),
-    lead_intent: pickValue(ld.lead_intent),
-    intent_score: pickValue(ld.intent_score),
-    actionable: pickValue(ld.actionable),
-    connect_on_whatsapp: toBoolean(pickValue(ld.connect_on_whatsapp)),
-    visit_scheduled_at: toTimestamp(pickValue(ld.date_and_time_of_visit)),
-    call_outcome: coerceCallOutcome(pickValue(ld.call_outcome)),
-    requested_callback_at: toTimestamp(pickValue(ld.callback_at)),
+    business_slug: findFieldValue(ld, "business_slug", "slug"),
+    name: findFieldValue(ld, "name", "customer_name", "lead_name"),
+    interest: findFieldValue(ld, "interest"),
+    customer_status: findFieldValue(ld, "customer_status", "status"),
+    lead_intent: findFieldValue(ld, "lead_intent", "intent"),
+    intent_score: findFieldValue(ld, "intent_score", "score"),
+    actionable: findFieldValue(ld, "actionable"),
+    connect_on_whatsapp: toBoolean(findFieldValue(ld, "connect_on_whatsapp", "whatsapp")),
+    visit_scheduled_at: toTimestamp(findFieldValue(ld, "date_and_time_of_visit", "visit_scheduled_at")),
+    call_outcome: coerceCallOutcome(outcomeRaw),
+    requested_callback_at: toTimestamp(findFieldValue(ld, "callback_at", "call_back_time", "callback_time")),
     confidence,
     summary: buildSummary(ld),
+  };
+}
+
+export function extractLeadFromExtractedData(
+  extractedData:
+    | Record<string, Record<string, BolnaField> | undefined>
+    | null
+    | undefined,
+): ExtractedLead {
+  if (!extractedData) return extractLead({});
+
+  const primary = extractedData.lead_data ?? {};
+  function find(candidateKeys: string[]): string | null {
+    const inPrimary = findFieldValue(primary, ...candidateKeys);
+    if (inPrimary !== null) return inPrimary;
+    for (const [cat, fields] of Object.entries(extractedData || {})) {
+      if (cat === "lead_data" || !fields || typeof fields !== "object") continue;
+      const inCat = findFieldValue(fields as Record<string, BolnaField>, ...candidateKeys);
+      if (inCat !== null) return inCat;
+    }
+    return null;
+  }
+
+  const outcomeRaw =
+    find(["call_outcome", "callOutcome", "outcome", "disposition"]) ||
+    find(["interest"]) ||
+    find(["customer_status", "status"]) ||
+    find(["lead_intent", "intent"]);
+
+  const confidence: Record<string, number> = {};
+  for (const fields of Object.values(extractedData || {})) {
+    if (fields && typeof fields === "object" && !Array.isArray(fields)) {
+      for (const [k, f] of Object.entries(fields)) {
+        if (typeof (f as BolnaField)?.confidence === "number") {
+          confidence[k] = (f as BolnaField).confidence!;
+        }
+      }
+    }
+  }
+
+  return {
+    business_slug: find(["business_slug", "slug"]),
+    name: find(["name", "customer_name", "lead_name"]),
+    interest: find(["interest"]),
+    customer_status: find(["customer_status", "status"]),
+    lead_intent: find(["lead_intent", "intent"]),
+    intent_score: find(["intent_score", "score"]),
+    actionable: find(["actionable"]),
+    connect_on_whatsapp: toBoolean(find(["connect_on_whatsapp", "whatsapp"])),
+    visit_scheduled_at: toTimestamp(find(["date_and_time_of_visit", "visit_scheduled_at"])),
+    call_outcome: coerceCallOutcome(outcomeRaw),
+    requested_callback_at: toTimestamp(find(["callback_at", "call_back_time", "callback_time"])),
+    confidence,
+    summary: buildSummary(primary),
   };
 }
 

@@ -1,13 +1,22 @@
+"use client";
+
+import { Fragment, useState } from "react";
 import {
   ActivityIcon,
+  BotIcon,
+  ChevronDownIcon,
+  ChevronUpIcon,
   ClockIcon,
+  HistoryIcon,
   PhoneCallIcon,
   PhoneIcon,
   PhoneOutgoingIcon,
+  RefreshCwIcon,
   TargetIcon,
   TrendingUpIcon,
   TriangleAlertIcon,
   UsersIcon,
+  Volume2Icon,
 } from "lucide-react";
 
 import { CallOutcomes } from "@/components/app/analytics/call-outcomes";
@@ -22,6 +31,7 @@ import { SectionLabel } from "@/components/app/section-label";
 import { StatCard } from "@/components/app/stat-card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Tooltip,
   TooltipContent,
@@ -32,14 +42,31 @@ import {
   contactStateMeta,
 } from "@/lib/campaigns/contact-state";
 import { formatDurationClock } from "@/lib/format/duration";
+import { formatDateTime, formatOutcomeKey } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { CampaignStats } from "@/actions/campaigns";
 
 /**
- * Performance dashboard for a single campaign. Pure presentation — the page
- * fetches `CampaignStats` server-side and hands it down.
+ * Performance dashboard for a single campaign. Client component for interactive
+ * attempt history timeline inspection.
  */
 export function CampaignPerformance({ stats }: { stats: CampaignStats }) {
+  const [expandedContactIds, setExpandedContactIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+
+  function toggleExpanded(id: string) {
+    setExpandedContactIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }
+
   const presentStates = CONTACT_STATE_META.filter(
     (m) => stats.contactStateCounts[m.key] > 0,
   );
@@ -239,40 +266,278 @@ export function CampaignPerformance({ stats }: { stats: CampaignStats }) {
               <DataTableHead>
                 <th className="px-5 py-3 font-medium">Contact</th>
                 <th className="px-3 py-3 font-medium">State</th>
-                <th className="px-3 py-3 font-medium">Reason</th>
-                <th className="px-3 py-3 text-right font-medium">Attempts</th>
-                <th className="px-5 py-3 text-right font-medium">
-                  Next attempt
-                </th>
+                <th className="px-3 py-3 font-medium">Will Retry?</th>
+                <th className="px-3 py-3 font-medium">Retry Time</th>
+                <th className="px-3 py-3 font-medium">Retry Agent</th>
+                <th className="px-3 py-3 font-medium">Reason / Disposition</th>
+                <th className="px-4 py-3 text-right font-medium">Attempts</th>
+                <th className="px-4 py-3 text-center font-medium">History</th>
               </DataTableHead>
               <tbody className="divide-y divide-border/60">
                 {stats.contacts.map((c) => {
                   const meta = contactStateMeta(c.state);
+                  const isExpanded = expandedContactIds.has(c.id);
+                  const historyCount = c.history?.length ?? 0;
                   return (
-                    <tr key={c.id} className="hover:bg-muted/30">
-                      <td className="px-5 py-2.5">
-                        <div className="flex flex-col">
-                          <span className="font-medium">
-                            {c.name?.trim() || "—"}
-                          </span>
-                          <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
-                            {c.phone}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="px-3 py-2.5">
-                        <Badge variant={meta.variant}>{meta.label}</Badge>
-                      </td>
-                      <td className="px-3 py-2.5 text-muted-foreground">
-                        {c.detail}
-                      </td>
-                      <td className="px-3 py-2.5 text-right tabular-nums">
-                        {c.attempt}/{c.maxAttempts}
-                      </td>
-                      <td className="px-5 py-2.5 text-right tabular-nums text-muted-foreground">
-                        {c.nextAttemptLabel ?? "—"}
-                      </td>
-                    </tr>
+                    <Fragment key={c.id}>
+                      <tr
+                        className={cn(
+                          "hover:bg-muted/30 transition-colors",
+                          isExpanded && "bg-muted/15",
+                        )}
+                      >
+                        <td className="px-5 py-2.5">
+                          <button
+                            type="button"
+                            onClick={() => toggleExpanded(c.id)}
+                            className="flex items-center gap-2 text-left group cursor-pointer"
+                          >
+                            <div className="flex flex-col">
+                              <span className="font-medium group-hover:text-primary transition-colors flex items-center gap-1.5">
+                                {c.name?.trim() || "—"}
+                              </span>
+                              <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
+                                {c.phone}
+                              </span>
+                            </div>
+                          </button>
+                        </td>
+                        <td className="px-3 py-2.5">
+                          <Badge variant={meta.variant}>{meta.label}</Badge>
+                        </td>
+                        <td className="px-3 py-2.5">
+                          {c.willRetry ? (
+                            <Badge variant="warning" className="gap-1 font-medium">
+                              <RefreshCwIcon className="size-3" />
+                              Yes
+                            </Badge>
+                          ) : (
+                            <Badge variant="neutral" className="text-muted-foreground font-normal">
+                              No
+                            </Badge>
+                          )}
+                        </td>
+                        <td className="px-3 py-2.5 tabular-nums">
+                          {c.willRetry && c.nextAttemptLabel ? (
+                            <div className="flex flex-col gap-0.5">
+                              <span className="flex items-center gap-1 font-medium text-foreground">
+                                <ClockIcon className="size-3 shrink-0 text-primary" />
+                                {c.nextAttemptLabel}
+                              </span>
+                              {c.nextAttemptFormatted ? (
+                                <span className="text-[11px] text-muted-foreground">
+                                  {c.nextAttemptFormatted}
+                                </span>
+                              ) : null}
+                            </div>
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2.5">
+                          {c.willRetry && c.retryAgentName ? (
+                            <div className="flex items-center gap-1.5">
+                              <BotIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                              <span className="max-w-[150px] truncate font-medium text-foreground">
+                                {c.retryAgentName}
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2.5 text-muted-foreground">
+                          {c.willRetry && c.detail.startsWith("Workflow retry") ? (
+                            <span className="inline-flex items-center gap-1 font-medium text-foreground">
+                              <RefreshCwIcon className="size-3 shrink-0 text-warning" />
+                              {c.detail}
+                            </span>
+                          ) : (
+                            <span>{c.detail}</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-2.5 text-right tabular-nums">
+                          <div className="flex flex-col items-end">
+                            <span className="font-medium text-foreground">
+                              {c.attempt}/{c.maxAttempts}
+                            </span>
+                            {c.maxConnectedAttempts !== undefined && (
+                              <span className="text-[11px] text-muted-foreground font-normal">
+                                {c.connectedCount ?? 0}/{c.maxConnectedAttempts} connected
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-4 py-2.5 text-center">
+                          <Button
+                            variant={isExpanded ? "secondary" : "outline"}
+                            size="xs"
+                            onClick={() => toggleExpanded(c.id)}
+                            className="gap-1.5 text-xs font-normal cursor-pointer"
+                          >
+                            <HistoryIcon className="size-3.5 text-primary" />
+                            <span>
+                              {historyCount > 0
+                                ? `${historyCount} dial${historyCount > 1 ? "s" : ""}`
+                                : "History"}
+                            </span>
+                            {isExpanded ? (
+                              <ChevronUpIcon className="size-3 text-muted-foreground" />
+                            ) : (
+                              <ChevronDownIcon className="size-3 text-muted-foreground" />
+                            )}
+                          </Button>
+                        </td>
+                      </tr>
+
+                      {isExpanded && (
+                        <tr key={`${c.id}-history`} className="bg-muted/10 border-b border-border/70 animate-in fade-in-50 duration-200">
+                          <td colSpan={8} className="p-3 sm:px-6 sm:py-4">
+                            <div className="flex flex-col gap-4 rounded-xl border border-border/70 bg-card/75 p-4 sm:p-5 shadow-xs">
+                              {/* Header bar */}
+                              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between border-b border-border/60 pb-3">
+                                <div className="flex items-center gap-2.5">
+                                  <div className="flex size-7 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                                    <HistoryIcon className="size-4" />
+                                  </div>
+                                  <div>
+                                    <div className="flex items-center gap-2">
+                                      <span className="font-semibold text-foreground text-sm">
+                                        Call Attempt History: {c.name || "Contact"}
+                                      </span>
+                                      <span className="font-mono text-xs text-muted-foreground tabular-nums">
+                                        ({c.phone})
+                                      </span>
+                                      <Badge variant="outline" className="text-[11px] font-normal py-0">
+                                        {c.history?.length ?? 0} {(c.history?.length ?? 0) === 1 ? "attempt" : "attempts"}
+                                      </Badge>
+                                    </div>
+                                    <span className="text-[11px] text-muted-foreground">
+                                      Detailed log of each call dial, outcome, duration, and agent recording
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Timeline list */}
+                              {(!c.history || c.history.length === 0) ? (
+                                <div className="flex flex-col items-center justify-center py-6 text-center text-muted-foreground">
+                                  <PhoneCallIcon className="size-8 text-muted-foreground/40 mb-1.5" />
+                                  <p className="text-xs font-medium text-foreground">No call history recorded yet</p>
+                                  <p className="text-[11px] text-muted-foreground max-w-sm mt-0.5">
+                                    Attempts will appear automatically as calls are dialed to this phone number.
+                                  </p>
+                                </div>
+                              ) : (
+                                <div className="relative pl-6 space-y-3 before:absolute before:left-2 before:top-2 before:bottom-2 before:w-0.5 before:bg-border/60">
+                                  {c.history.map((item) => {
+                                    const statusBadgeVariant =
+                                      item.status === "completed"
+                                        ? "success"
+                                        : item.status === "failed"
+                                          ? "destructive"
+                                          : item.status === "busy" || item.status === "no_answer"
+                                            ? "warning"
+                                            : "neutral";
+
+                                    return (
+                                      <div
+                                        key={item.id}
+                                        className="relative flex flex-col gap-2 p-3.5 rounded-lg border border-border/70 bg-card/90 hover:bg-card shadow-xs transition-all text-xs"
+                                      >
+                                        {/* Timeline dot */}
+                                        <div
+                                          className={cn(
+                                            "absolute -left-[21px] top-4 size-3 rounded-full border-2 border-background",
+                                            item.status === "completed"
+                                              ? "bg-emerald-500 ring-2 ring-emerald-500/30"
+                                              : item.status === "failed"
+                                                ? "bg-rose-500 ring-2 ring-rose-500/30"
+                                                : "bg-amber-500 ring-2 ring-amber-500/30",
+                                          )}
+                                        />
+
+                                        {/* Header line */}
+                                        <div className="flex flex-wrap items-center justify-between gap-2">
+                                          <div className="flex flex-wrap items-center gap-1.5">
+                                            <span className="font-semibold text-foreground text-xs">
+                                              Attempt #{item.attemptNumber}
+                                            </span>
+
+                                            <Badge variant={statusBadgeVariant} className="text-[10px] py-0 px-1.5">
+                                              {item.status}
+                                            </Badge>
+
+                                            {item.outcome ? (
+                                              <Badge
+                                                variant="neutral"
+                                                className="text-[11px] font-medium text-foreground bg-muted/70 border border-border/80 py-0"
+                                              >
+                                                Outcome: {formatOutcomeKey(item.outcome)}
+                                              </Badge>
+                                            ) : null}
+                                          </div>
+
+                                          <span className="text-[11px] text-muted-foreground tabular-nums">
+                                            {formatDateTime(item.startedAt)}
+                                          </span>
+                                        </div>
+
+                                        {/* Metadata line */}
+                                        <div className="flex flex-wrap items-center gap-3 text-muted-foreground text-[11px]">
+                                          <span className="flex items-center gap-1 tabular-nums">
+                                            <ClockIcon className="size-3 text-muted-foreground/70" />
+                                            {formatDurationClock(item.durationSeconds ?? 0)}
+                                          </span>
+
+                                          {item.agentName ? (
+                                            <span className="flex items-center gap-1">
+                                              <BotIcon className="size-3 text-muted-foreground/70" />
+                                              {item.agentName}
+                                            </span>
+                                          ) : null}
+
+                                          {item.fromPhone ? (
+                                            <span className="font-mono text-[10px] text-muted-foreground/80">
+                                              Caller ID: {item.fromPhone}
+                                            </span>
+                                          ) : null}
+
+                                          {item.recordingUrl ? (
+                                            <a
+                                              href={item.recordingUrl}
+                                              target="_blank"
+                                              rel="noopener noreferrer"
+                                              className="inline-flex items-center gap-1 text-primary hover:underline font-medium ml-auto"
+                                            >
+                                              <Volume2Icon className="size-3.5" />
+                                              Listen Recording
+                                            </a>
+                                          ) : null}
+                                        </div>
+
+                                        {/* Summary / notes */}
+                                        {item.summary ? (
+                                          <p className="text-[11px] text-muted-foreground italic border-t border-border/40 pt-1.5 mt-0.5">
+                                            &ldquo;{item.summary}&rdquo;
+                                          </p>
+                                        ) : null}
+
+                                        {item.errorMessage ? (
+                                          <p className="text-[11px] text-destructive border-t border-border/40 pt-1.5 mt-0.5">
+                                            Error: {item.errorMessage}
+                                          </p>
+                                        ) : null}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   );
                 })}
               </tbody>

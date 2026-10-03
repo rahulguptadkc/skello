@@ -1,18 +1,12 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
-import {
-  type DiscoveredCustomField,
-  discoverCustomFields,
-  pickCustomFieldValue,
-  stringifyCustomValue,
-} from "@/lib/csv-custom-fields";
 import { logSkeloError } from "@/lib/errors";
 import { requireSession } from "@/lib/auth/session";
-import { type CsvColumn, toCsv, withBom } from "@/lib/csv";
+import { toCsv, withBom } from "@/lib/csv";
 import { applyCallFilters } from "@/lib/queries/call-filters";
 import { checkRateLimit, tooManyRequestsResponse } from "@/lib/rate-limit";
-import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import {
   callDirectionSchema,
   callStatusSchema,
@@ -21,11 +15,11 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Per-export row cap. A `limit(EXPORT_CAP + 1)` trick lets us detect
-// truncation in the same query rather than running a second count
-// roundtrip — anything past EXPORT_CAP is dropped before serialising and
-// the X-Export-Truncated header tells the dialog to surface a warning.
-const EXPORT_CAP = 10_000;
+// Per-export row cap. We paginate Supabase PostgREST in batches of BATCH_SIZE
+// (since PostgREST defaults to a 1,000 max-rows per-request limit) up to EXPORT_CAP
+// so that large datasets are fully exported without silent row truncations.
+const EXPORT_CAP = 50_000;
+const BATCH_SIZE = 1_000;
 
 // Backend contract: the frontend resolves a preset (or custom date inputs)
 // into concrete from/to ISO timestamps and posts them as query params.
@@ -57,6 +51,7 @@ const CALL_COLUMNS =
   "name_extracted, interest, lead_intent_extracted, customer_status, " +
   "actionable, visit_scheduled_at, connect_on_whatsapp, transcript_status, " +
   "transcript, lead_data, custom_data, error_code, error_message, " +
+  "call_outcome, " +
   "lead:leads(name, phone)";
 
 interface CallRow {
@@ -82,6 +77,7 @@ interface CallRow {
   connect_on_whatsapp: boolean | null;
   transcript_status: string | null;
   transcript: string | null;
+  call_outcome: string | null;
   lead_data: Record<string, unknown> | null;
   custom_data: Record<string, Record<string, unknown>> | null;
   error_code: string | null;
@@ -89,76 +85,12 @@ interface CallRow {
   lead: { name: string | null; phone: string | null } | null;
 }
 
-interface ExportRow extends CallRow {
-  agent_label: string | null;
-  counterparty_phone: string | null;
-}
-
-// Keys already surfaced as their own CSV columns — skip when flattening
-// lead_data so the same value doesn't appear twice. Mirrors the
-// CALL_LEAD_DATA_SURFACED set in the call detail sheet.
-const SURFACED_LEAD_DATA_KEYS = new Set([
-  "name",
-  "interest",
-  "lead_intent",
-  "actionable",
-  "customer_status",
-  "connect_on_whatsapp",
-  "date_and_time_of_visit",
-  "business_slug",
-]);
-
-const STATIC_CSV_COLUMNS: CsvColumn<ExportRow>[] = [
-  { header: "Call ID", value: (c) => c.id },
-  { header: "Provider Call ID", value: (c) => c.bolna_call_id },
-  { header: "Started At", value: (c) => c.started_at },
-  { header: "Answered At", value: (c) => c.answered_at },
-  { header: "Ended At", value: (c) => c.ended_at },
-  { header: "Duration (sec)", value: (c) => c.duration_seconds },
-  { header: "Direction", value: (c) => c.direction },
-  { header: "Outcome", value: (c) => c.status },
-  { header: "Agent", value: (c) => c.agent_label ?? c.agent_id },
-  { header: "Lead Name", value: (c) => c.lead?.name ?? null },
-  { header: "Name (Captured)", value: (c) => c.name_extracted },
-  { header: "Lead Phone", value: (c) => c.lead?.phone ?? c.counterparty_phone },
-  { header: "From Phone", value: (c) => c.from_phone },
-  { header: "To Phone", value: (c) => c.to_phone },
-  { header: "Language", value: (c) => c.language },
-  { header: "Transcript Status", value: (c) => c.transcript_status },
-  { header: "Transcript", value: (c) => c.transcript },
-  { header: "Summary", value: (c) => c.summary },
-  { header: "Intent", value: (c) => c.lead_intent_extracted },
-  { header: "Interest", value: (c) => c.interest },
-  { header: "Customer Type", value: (c) => c.customer_status },
-  { header: "Actionable", value: (c) => c.actionable },
-  { header: "Visit Scheduled", value: (c) => c.visit_scheduled_at },
-  { header: "Wants WA", value: (c) => c.connect_on_whatsapp },
-  { header: "Error Code", value: (c) => c.error_code },
-  { header: "Error Message", value: (c) => c.error_message },
-];
-
-// Per-field columns are inserted after "Wants WA" (where the old
-// single "Captured Fields" column used to live), so the error pair
-// stays at the right edge of the sheet.
-function buildCsvColumns(
-  fields: DiscoveredCustomField[],
-): CsvColumn<ExportRow>[] {
-  const dynamicColumns: CsvColumn<ExportRow>[] = fields.map((f) => ({
-    header: f.header,
-    value: (row) => stringifyCustomValue(pickCustomFieldValue(row, f)),
-  }));
-  const errorIdx = STATIC_CSV_COLUMNS.findIndex(
-    (col) => col.header === "Error Code",
-  );
-  if (errorIdx === -1) {
-    return [...STATIC_CSV_COLUMNS, ...dynamicColumns];
-  }
-  return [
-    ...STATIC_CSV_COLUMNS.slice(0, errorIdx),
-    ...dynamicColumns,
-    ...STATIC_CSV_COLUMNS.slice(errorIdx),
-  ];
-}
+import {
+  buildCallExportCsvColumns,
+  fetchAgentLabels,
+  getExportExtractionDefinitions,
+  type UnifiedCallRecord,
+} from "@/lib/export/shared-export-columns";
 
 export async function GET(request: NextRequest) {
   const session = await requireSession();
@@ -198,56 +130,71 @@ export async function GET(request: NextRequest) {
   const { from, to, range, direction, status, agent_id, q, lead_id } =
     parsedInput.data;
 
-  const supabase = await createClient();
-  // EXPORT_CAP + 1 fetched intentionally — the +1 is a sentinel row used
-  // only to set X-Export-Truncated. It's dropped before CSV serialisation
-  // so the user never sees it.
-  let query = supabase
-    .from("calls")
-    .select(CALL_COLUMNS)
-    .eq("organisation_id", session.organisation.id)
-    .order("started_at", { ascending: false })
-    .limit(EXPORT_CAP + 1);
+  const admin = createAdminClient();
+  const allCalls: CallRow[] = [];
+  let offset = 0;
+  let hasMore = true;
+  let truncated = false;
 
-  // applyCallFilters is the single source of truth for conversations table
-  // filters, also used by listConversations in actions/calls.ts. The date
-  // range and lead_id flow through the same helper.
-  query = applyCallFilters(query, {
-    from,
-    to,
-    direction,
-    status,
-    agent_id,
-    q,
-    lead_id,
-  });
+  while (hasMore) {
+    let query = admin
+      .from("calls")
+      .select(CALL_COLUMNS)
+      .eq("organisation_id", session.organisation.id)
+      .order("started_at", { ascending: false })
+      .range(offset, offset + BATCH_SIZE - 1);
 
-  const { data, error } = await query.returns<CallRow[]>();
-  if (error) {
-    const message = logSkeloError("EXPORT", "Call export query failed", {
-      organisationId: session.organisation.id,
-      cause: error,
+    query = applyCallFilters(query, {
+      from,
+      to,
+      direction,
+      status,
+      agent_id,
+      q,
+      lead_id,
     });
-    return NextResponse.json({ error: message }, { status: 500 });
+
+    const { data, error } = await query.returns<CallRow[]>();
+    if (error) {
+      const message = logSkeloError("EXPORT", "Call export query failed", {
+        organisationId: session.organisation.id,
+        cause: error,
+      });
+      return NextResponse.json({ error: message }, { status: 500 });
+    }
+
+    const batch = data ?? [];
+    allCalls.push(...batch);
+
+    if (batch.length < BATCH_SIZE) {
+      hasMore = false;
+    } else if (allCalls.length >= EXPORT_CAP) {
+      hasMore = false;
+      truncated = true;
+    } else {
+      offset += BATCH_SIZE;
+    }
   }
 
-  const raw = data ?? [];
-  const truncated = raw.length > EXPORT_CAP;
-  const calls = truncated ? raw.slice(0, EXPORT_CAP) : raw;
+  const calls = truncated ? allCalls.slice(0, EXPORT_CAP) : allCalls;
 
   // Resolve agent labels in one round trip. Falls back to the raw agent_id
   // when no voice_agents row exists (e.g. a legacy / unregistered agent).
   const agentIds = Array.from(new Set(calls.map((c) => c.agent_id).filter(Boolean)));
-  const labelById = await fetchAgentLabels(session.organisation.id, agentIds);
+  const labelById = await fetchAgentLabels(admin, session.organisation.id, agentIds);
 
-  const rows: ExportRow[] = calls.map((c) => ({
+  const rows: UnifiedCallRecord[] = calls.map((c) => ({
     ...c,
     agent_label: labelById.get(c.agent_id) ?? null,
     counterparty_phone: c.direction === "inbound" ? c.from_phone : c.to_phone,
   }));
 
-  const discoveredFields = discoverCustomFields(calls, SURFACED_LEAD_DATA_KEYS);
-  const csvColumns = buildCsvColumns(discoveredFields);
+  const extractions = await getExportExtractionDefinitions(
+    admin,
+    session.organisation.id,
+    rows,
+  );
+  const csvColumns = buildCallExportCsvColumns(extractions);
   const body = withBom(toCsv(rows, csvColumns));
   const stamp = new Date().toISOString().slice(0, 10);
   const rangeLabel = (range ?? "custom").replace(/[^a-z0-9_-]+/gi, "_");
@@ -267,31 +214,4 @@ export async function GET(request: NextRequest) {
       "X-Export-Truncated": truncated ? "true" : "false",
     },
   });
-}
-
-async function fetchAgentLabels(
-  organisationId: string,
-  agentIds: string[],
-): Promise<Map<string, string>> {
-  const out = new Map<string, string>();
-  if (agentIds.length === 0) return out;
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from("voice_agents")
-    .select("agent_id, label")
-    .eq("organisation_id", organisationId)
-    .in("agent_id", agentIds)
-    .returns<{ agent_id: string; label: string | null }[]>();
-  if (error) {
-    logSkeloError("EXPORT", "Voice-agent label fetch failed (CSV will fall back to agent_id)", {
-      organisationId,
-      cause: error,
-    });
-    return out;
-  }
-  for (const row of data ?? []) {
-    const label = row.label?.trim();
-    if (label) out.set(row.agent_id, label);
-  }
-  return out;
 }

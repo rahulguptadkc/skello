@@ -163,23 +163,39 @@ export async function recordOutboundResult(
     payload.user_number?.trim() ||
     null;
 
+  // Extract known contact name from campaign contact if this was a campaign call
+  let knownContactName: string | null = null;
+  if (call.campaign_contact_id) {
+    const { data: contact } = await admin
+      .from("campaign_contacts")
+      .select("name")
+      .eq("id", call.campaign_contact_id)
+      .maybeSingle<{ name: string | null }>();
+    if (contact?.name) knownContactName = contact.name;
+  }
+
   const merge = await mergePayloadIntoLead({
     organisationId: call.organisation_id,
     phoneRaw: toPhone,
     payload,
     source: "manual",
+    knownName: knownContactName,
   });
 
-  console.log("[outbound] updating call", {
-    callId: call.id,
-    externalId,
-    status,
-    durationSeconds,
-    hasTranscript: !!transcript,
-    hasRecording: !!recordingUrl,
-    bootstrapped: !matchedExisting,
-    leadId: merge.leadId,
-  });
+  console.log(
+    `\n============================================================\n` +
+      `[POST-CALL WEBHOOK RECEIVED: OUTBOUND]\n` +
+      `  Call ID: ${call.id}\n` +
+      `  Bolna Call ID: ${externalId}\n` +
+      `  Status: ${status} | Duration: ${durationSeconds ?? 0}s\n` +
+      `  Contact ID: ${call.campaign_contact_id ?? "none"}\n` +
+      `  Lead ID: ${merge.leadId ?? "none"}\n` +
+      `  Extracted Outcome: ${merge.callSnapshot.call_outcome ?? "none"}\n` +
+      `  Extracted Interest: ${merge.callSnapshot.interest ?? "none"}\n` +
+      `  Extracted Intent: ${merge.callSnapshot.lead_intent_extracted ?? "none"}\n` +
+      `  Summary: ${payload.summary ? payload.summary.slice(0, 150) + "..." : "none"}\n` +
+      `============================================================\n`,
+  );
 
   // Patch the existing call row with the outcome + the per-call snapshot.
   // We also re-attach lead_id if it was missing (e.g. bootstrapped row).
@@ -234,13 +250,51 @@ export async function recordOutboundResult(
   // break the call-record response (the in-flight reconcile is the backstop).
   if (call.campaign_contact_id) {
     try {
+      const rawIntent =
+        (merge.callSnapshot.lead_intent_extracted as string | null) ||
+        (merge.callSnapshot.lead_data?.lead_intent as string | null) ||
+        (merge.callSnapshot.lead_data?.intent as string | null) ||
+        null;
+      let rawInterest =
+        merge.callSnapshot.interest ||
+        (merge.callSnapshot.lead_data?.interest as string | null) ||
+        null;
+      if (!rawInterest && merge.callSnapshot.custom_data) {
+        for (const cat of Object.values(merge.callSnapshot.custom_data)) {
+          for (const [k, v] of Object.entries(cat)) {
+            if (k.toLowerCase().includes("interest") && typeof v === "string") {
+              rawInterest = v;
+              break;
+            }
+          }
+          if (rawInterest) break;
+        }
+      }
+      const rawCustomerStatus =
+        merge.callSnapshot.customer_status ||
+        (merge.callSnapshot.lead_data?.customer_status as string | null) ||
+        null;
+
+      console.log(
+        `[outbound] Triggering applyCampaignContactOutcome for call ${call.id} (contact: ${call.campaign_contact_id})`,
+      );
+
       await applyCampaignContactOutcome({
         contactId: call.campaign_contact_id,
         callId: call.id,
         callStatus: status,
         callOutcome: merge.callSnapshot.call_outcome,
+        leadIntent: rawIntent,
+        interest: rawInterest,
+        customerStatus: rawCustomerStatus,
+        leadData: merge.callSnapshot.lead_data,
+        customData: merge.callSnapshot.custom_data,
         requestedCallbackAt: merge.callSnapshot.requested_callback_at,
       });
+
+      console.log(
+        `[outbound] Finished applyCampaignContactOutcome for call ${call.id}`,
+      );
     } catch (err) {
       console.error("[outbound] campaign outcome failed", err);
     }

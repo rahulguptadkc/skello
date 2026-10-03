@@ -8,7 +8,6 @@ import {
   PlugZapIcon,
   SlidersHorizontalIcon,
   TargetIcon,
-  UserIcon,
 } from "lucide-react";
 
 import { ErrorCard } from "@/components/app/error-card";
@@ -16,7 +15,11 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { OrgInfoForm } from "@/components/admin/org-info-form";
-import { getOrganisationAdmin } from "@/actions/admin/organisations";
+import { OrgTeamCard } from "@/components/admin/org-team-card";
+import {
+  getOrganisationAdmin,
+  listOrganisationMembersAdmin,
+} from "@/actions/admin/organisations";
 import { getVoiceAgentAdmin } from "@/actions/admin/voice-agent";
 import { getWhatsAppAdmin } from "@/actions/admin/whatsapp";
 import { formatRelative } from "@/lib/format";
@@ -32,10 +35,11 @@ export default async function AdminOrganisationDetailPage({
 }: PageProps) {
   const { id } = await params;
 
-  const [orgResult, integrationResult, whatsappResult] = await Promise.all([
+  const [orgResult, integrationResult, whatsappResult, membersResult] = await Promise.all([
     getOrganisationAdmin(id),
     getVoiceAgentAdmin(id),
     getWhatsAppAdmin(id),
+    listOrganisationMembersAdmin(id),
   ]);
 
   if (!orgResult.success) {
@@ -49,6 +53,7 @@ export default async function AdminOrganisationDetailPage({
   const org = orgResult.data;
   const integration = integrationResult.success ? integrationResult.data : null;
   const whatsapp = whatsappResult.success ? whatsappResult.data : null;
+  const members = membersResult.success ? membersResult.data : [];
 
   return (
     <div className="flex flex-col gap-6">
@@ -178,24 +183,7 @@ export default async function AdminOrganisationDetailPage({
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <UserIcon className="size-4 text-muted-foreground" />
-            <CardTitle>Owner</CardTitle>
-          </div>
-        </CardHeader>
-        <CardContent>
-          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
-            <dt className="text-xs text-muted-foreground">Email</dt>
-            <dd className="truncate">{org.owner_email ?? "—"}</dd>
-            <dt className="text-xs text-muted-foreground">User ID</dt>
-            <dd className="font-mono text-xs text-muted-foreground">
-              {org.owner_id}
-            </dd>
-          </dl>
-        </CardContent>
-      </Card>
+      <OrgTeamCard organisationId={org.id} members={members} />
     </div>
   );
 }

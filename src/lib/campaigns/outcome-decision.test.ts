@@ -9,6 +9,7 @@ import {
 import type { CallStatus } from "@/types/call";
 import type { CampaignRetryTrigger } from "@/types/campaign";
 import type { ResolvedOutcomePolicy } from "@/types/outcome-policy";
+import type { OutcomeRule } from "@/types/workflow";
 
 // Fixed clock so next_attempt_at is deterministic.
 const NOW = 1_700_000_000_000;
@@ -327,6 +328,474 @@ describe("decideOutcome — technical tier", () => {
   });
 });
 
+describe("decideOutcome — non-workflow campaigns (Max Retries: 3, Max Connected Attempts: 2)", () => {
+  const NON_WF_CAMPAIGN = {
+    max_attempts: 4, // 3 retries + 1 initial attempt = 4 attempts
+    max_connected_attempts: 2, // Up to 2 connected calls
+    max_callbacks: 2,
+    retry_interval_seconds: INTERVAL,
+    retry_on: ["no_answer", "busy", "failed", "canceled"] as CampaignRetryTrigger[],
+  };
+
+  it("re-arms on technical failures (no_answer) while attempt < max_attempts", () => {
+    // Attempt 1: fails
+    const d1 = decideOutcome(
+      make({
+        callStatus: "no_answer",
+        attempt: 1,
+        connectedCount: 0,
+        campaign: NON_WF_CAMPAIGN,
+        workflowRules: null,
+      }),
+    );
+    expect(d1.kind).toBe("rearm");
+
+    // Attempt 2: fails
+    const d2 = decideOutcome(
+      make({
+        callStatus: "no_answer",
+        attempt: 2,
+        connectedCount: 0,
+        campaign: NON_WF_CAMPAIGN,
+        workflowRules: null,
+      }),
+    );
+    expect(d2.kind).toBe("rearm");
+
+    // Attempt 3: fails
+    const d3 = decideOutcome(
+      make({
+        callStatus: "no_answer",
+        attempt: 3,
+        connectedCount: 0,
+        campaign: NON_WF_CAMPAIGN,
+        workflowRules: null,
+      }),
+    );
+    expect(d3.kind).toBe("rearm");
+
+    // Attempt 4: cap hit (3 retries exhausted)
+    const d4 = decideOutcome(
+      make({
+        callStatus: "no_answer",
+        attempt: 4,
+        connectedCount: 0,
+        campaign: NON_WF_CAMPAIGN,
+        workflowRules: null,
+      }),
+    );
+    expect(d4.kind).toBe("fail");
+  });
+
+  it("enforces max_connected_attempts on completed calls and callbacks", () => {
+    // 1st connected call with callback_requested: under cap (1 < 2), re-arms for callback
+    const d1 = decideOutcome(
+      make({
+        callStatus: "completed",
+        callOutcome: "callback_requested",
+        attempt: 1,
+        connectedCount: 0,
+        callbackCount: 0,
+        campaign: NON_WF_CAMPAIGN,
+        workflowRules: null,
+      }),
+    );
+    expect(d1.kind).toBe("rearm");
+
+    // 2nd connected call with callback_requested: cap reached (2 >= 2), succeeds without re-arming
+    const d2 = decideOutcome(
+      make({
+        callStatus: "completed",
+        callOutcome: "callback_requested",
+        attempt: 2,
+        connectedCount: 1,
+        callbackCount: 1,
+        campaign: NON_WF_CAMPAIGN,
+        workflowRules: null,
+      }),
+    );
+    expect(d2.kind).toBe("succeed");
+  });
+
+  it("stops dialing technical calls if max_connected_attempts is already reached", () => {
+    // Contact already had 2 connected calls, now encounters a busy signal:
+    // connectedCount (2) >= max_connected_attempts (2) -> stops dialing immediately
+    const d = decideOutcome(
+      make({
+        callStatus: "busy",
+        attempt: 2,
+        connectedCount: 2,
+        campaign: NON_WF_CAMPAIGN,
+        workflowRules: null,
+      }),
+    );
+    expect(d.kind).toBe("fail");
+    if (d.kind === "fail") {
+      expect(d.patch.last_error).toBe("Max connected attempts reached (2)");
+    }
+  });
+});
+
+describe("decideOutcome — workflow rules matrix", () => {
+  const rules: OutcomeRule[] = [
+    {
+      id: "r1",
+      variables: ["interested"],
+      action: "stop_calling",
+      retries: 0,
+      agent_id: null,
+    },
+    {
+      id: "r2",
+      variables: ["not_interested", "dnd"],
+      action: "stop_calling",
+      retries: 0,
+      agent_id: null,
+    },
+    {
+      id: "r3",
+      variables: ["callback_requested"],
+      action: "call_again",
+      retries: 2,
+      delay_minutes: 60,
+      agent_id: null,
+    },
+    {
+      id: "r4",
+      variables: ["no_answer", "busy"],
+      action: "call_again",
+      retries: 2,
+      delay_minutes: 120,
+      agent_id: null,
+    },
+  ];
+
+  it("stops calling when workflow rule action is stop_calling on interested", () => {
+    const d = decideOutcome(
+      make({
+        callStatus: "completed",
+        callOutcome: "interested",
+        workflowRules: rules,
+      }),
+    );
+    expect(d.kind).toBe("succeed");
+    if (d.kind === "succeed") {
+      expect(d.patch.status).toBe("succeeded");
+      expect(d.patch.last_outcome).toBe("interested");
+    }
+  });
+
+  it("stops calling when workflow rule action is stop_calling on dnd", () => {
+    const d = decideOutcome(
+      make({
+        callStatus: "completed",
+        callOutcome: "dnd",
+        workflowRules: rules,
+      }),
+    );
+    expect(d.kind).toBe("fail");
+    if (d.kind === "fail") {
+      expect(d.patch.status).toBe("failed");
+      expect(d.patch.last_error).toContain("Disqualified");
+    }
+  });
+
+  it("re-arms when workflow rule action is call_again on no_answer under max retries", () => {
+    const d = decideOutcome(
+      make({
+        callStatus: "no_answer",
+        attempt: 1,
+        workflowRules: rules,
+      }),
+    );
+    expect(d.kind).toBe("rearm");
+    if (d.kind === "rearm") {
+      expect(d.patch.status).toBe("pending");
+      // Delay 120 minutes = 7200 seconds
+      expect(d.patch.next_attempt_at).toBe(
+        new Date(NOW + 120 * 60 * 1000).toISOString(),
+      );
+    }
+  });
+
+  it("stops calling when max retries limit is reached for call_again rule", () => {
+    const d = decideOutcome(
+      make({
+        callStatus: "no_answer",
+        attempt: 3,
+        campaign: {
+          max_attempts: 3,
+          max_callbacks: 0,
+          retry_interval_seconds: INTERVAL,
+          retry_on: ["no_answer"],
+        },
+        workflowRules: rules,
+      }),
+    );
+    expect(d.kind).toBe("fail");
+    if (d.kind === "fail") {
+      expect(d.patch.status).toBe("failed");
+      expect(d.patch.last_error).toContain("Max retries reached");
+    }
+  });
+
+  it("stops calling when max_connected_attempts cap is reached on completed call", () => {
+    const d = decideOutcome(
+      make({
+        callStatus: "completed",
+        callOutcome: "callback_requested",
+        connectedCount: 3, // rule has retries: 2, so max connected attempts allowed is 3
+        campaign: {
+          max_attempts: 5,
+          max_connected_attempts: 1,
+          max_callbacks: 2,
+          retry_interval_seconds: INTERVAL,
+          retry_on: [],
+        },
+        workflowRules: rules,
+      }),
+    );
+    expect(d.kind).toBe("succeed");
+    if (d.kind === "succeed") {
+      expect(d.patch.status).toBe("succeeded");
+    }
+  });
+
+  it("re-arms when leadIntent matches workflow rule variable (e.g. yes_me / yes_maybe)", () => {
+    const wfWithIntent: OutcomeRule[] = [
+      {
+        id: "wf-1",
+        variables: ["yes_maybe", "yes_me"],
+        action: "call_again",
+        retries: 2,
+        delay_minutes: 2,
+        agent_id: "retry-agent-123",
+      },
+    ];
+
+    const d = decideOutcome(
+      make({
+        callStatus: "completed",
+        callOutcome: null,
+        leadIntent: "yes_me",
+        attempt: 1,
+        connectedCount: 0,
+        workflowRules: wfWithIntent,
+      }),
+    );
+
+    expect(d.kind).toBe("rearm");
+    if (d.kind === "rearm") {
+      expect(d.patch.status).toBe("pending");
+      // 2 minutes delay = 120 seconds
+      expect(d.patch.next_attempt_at).toBe(
+        new Date(NOW + 2 * 60 * 1000).toISOString(),
+      );
+      expect((d.patch.metadata as Record<string, unknown>)?.retry_agent_id).toBe(
+        "retry-agent-123",
+      );
+    }
+  });
+
+  it("re-arms when leadData candidate matches workflow rule variable", () => {
+    const wfWithIntent: OutcomeRule[] = [
+      {
+        id: "wf-2",
+        variables: ["interested_callback"],
+        action: "call_again",
+        retries: 1,
+        delay_minutes: 5,
+        agent_id: null,
+      },
+    ];
+
+    const d = decideOutcome(
+      make({
+        callStatus: "completed",
+        callOutcome: null,
+        leadData: { custom_status: "interested_callback" },
+        attempt: 1,
+        connectedCount: 0,
+        workflowRules: wfWithIntent,
+      }),
+    );
+
+    expect(d.kind).toBe("rearm");
+    if (d.kind === "rearm") {
+      expect(d.patch.status).toBe("pending");
+      expect(d.patch.next_attempt_at).toBe(
+        new Date(NOW + 5 * 60 * 1000).toISOString(),
+      );
+    }
+  });
+
+  it("correctly matches no_conversation and not_interested without false-matching interested", () => {
+    const multiRuleWorkflow: OutcomeRule[] = [
+      {
+        id: "wf-row-1",
+        variables: ["interested"],
+        action: "stop_calling",
+        retries: 0,
+        delay_minutes: undefined,
+        agent_id: null,
+      },
+      {
+        id: "wf-row-2",
+        variables: ["not_interested"],
+        action: "call_again",
+        retries: 2,
+        delay_minutes: 2,
+        agent_id: "agent-loan-test",
+      },
+      {
+        id: "wf-row-3",
+        variables: ["voicemail", "no_conversation"],
+        action: "call_again",
+        retries: 3,
+        delay_minutes: 5,
+        agent_id: "agent-loan-test",
+      },
+    ];
+
+    // Test 1: no_conversation -> matches row 3 (rearm with 3 retries, 5 min delay)
+    const dNoConv = decideOutcome(
+      make({
+        callStatus: "completed",
+        callOutcome: "no_conversation",
+        attempt: 1,
+        connectedCount: 0,
+        workflowRules: multiRuleWorkflow,
+      }),
+    );
+    expect(dNoConv.kind).toBe("rearm");
+    if (dNoConv.kind === "rearm") {
+      expect(dNoConv.patch.status).toBe("pending");
+      expect(dNoConv.patch.last_outcome).toBe("no_conversation");
+      expect(dNoConv.patch.next_attempt_at).toBe(
+        new Date(NOW + 5 * 60 * 1000).toISOString(),
+      );
+      expect((dNoConv.patch.metadata as Record<string, unknown>)?.retry_agent_id).toBe(
+        "agent-loan-test",
+      );
+    }
+
+    // Test 2: not_interested -> matches row 2 (rearm with 2 retries, 2 min delay)
+    const dNotInt = decideOutcome(
+      make({
+        callStatus: "completed",
+        callOutcome: "not_interested",
+        attempt: 1,
+        connectedCount: 0,
+        workflowRules: multiRuleWorkflow,
+      }),
+    );
+    expect(dNotInt.kind).toBe("rearm");
+    if (dNotInt.kind === "rearm") {
+      expect(dNotInt.patch.status).toBe("pending");
+      expect(dNotInt.patch.last_outcome).toBe("not_interested");
+      expect(dNotInt.patch.next_attempt_at).toBe(
+        new Date(NOW + 2 * 60 * 1000).toISOString(),
+      );
+    }
+
+    // Test 3: interested -> matches row 1 (stop calling -> succeed)
+    const dInt = decideOutcome(
+      make({
+        callStatus: "completed",
+        callOutcome: "interested",
+        attempt: 1,
+        connectedCount: 0,
+        workflowRules: multiRuleWorkflow,
+      }),
+    );
+    expect(dInt.kind).toBe("succeed");
+    if (dInt.kind === "succeed") {
+      expect(dInt.patch.status).toBe("succeeded");
+      expect(dInt.patch.last_outcome).toBe("interested");
+    }
+
+    // Test 4: custom_data with Interest: "No_contact" -> matches row 3 (no_conversation / voicemail) -> rearm
+    const dCustomNoContact = decideOutcome(
+      make({
+        callStatus: "completed",
+        callOutcome: null,
+        attempt: 1,
+        connectedCount: 0,
+        customData: {
+          "": { Interest: "No_contact" },
+        },
+        workflowRules: multiRuleWorkflow,
+      }),
+    );
+    expect(dCustomNoContact.kind).toBe("rearm");
+    if (dCustomNoContact.kind === "rearm") {
+      expect(dCustomNoContact.patch.status).toBe("pending");
+      expect(dCustomNoContact.patch.next_attempt_at).toBe(
+        new Date(NOW + 5 * 60 * 1000).toISOString(),
+      );
+    }
+
+    // Test 5: custom_data with Interest: "No" -> matches row 2 (not_interested) -> rearm with 2 retries
+    const dCustomNo = decideOutcome(
+      make({
+        callStatus: "completed",
+        callOutcome: null,
+        attempt: 1,
+        connectedCount: 0,
+        customData: {
+          "": { Interest: "No" },
+        },
+        workflowRules: multiRuleWorkflow,
+      }),
+    );
+    expect(dCustomNo.kind).toBe("rearm");
+    if (dCustomNo.kind === "rearm") {
+      expect(dCustomNo.patch.status).toBe("pending");
+      expect(dCustomNo.patch.next_attempt_at).toBe(
+        new Date(NOW + 2 * 60 * 1000).toISOString(),
+      );
+    }
+
+    // Test 6: voicemail exhausted retries on call_again -> fail (not succeed)
+    const dExhaustedVoicemail = decideOutcome(
+      make({
+        callStatus: "completed",
+        callOutcome: "voicemail",
+        attempt: 4, // 3 retries + 1 initial attempt = 4 attempts
+        connectedCount: 3,
+        workflowRules: multiRuleWorkflow,
+      }),
+    );
+    expect(dExhaustedVoicemail.kind).toBe("fail");
+    if (dExhaustedVoicemail.kind === "fail") {
+      expect(dExhaustedVoicemail.patch.status).toBe("failed");
+      expect(dExhaustedVoicemail.patch.last_error).toContain("Max retries reached");
+    }
+
+    // Test 7: no_conversation on completed call (attempt 1/4) -> MUST rearm, NOT succeed!
+    const dNoConvAttempt1 = decideOutcome(
+      make({
+        callStatus: "completed",
+        callOutcome: "no_conversation",
+        attempt: 1,
+        connectedCount: 0,
+        workflowRules: multiRuleWorkflow,
+      }),
+    );
+    expect(dNoConvAttempt1.kind).toBe("rearm");
+    if (dNoConvAttempt1.kind === "rearm") {
+      expect(dNoConvAttempt1.patch.status).toBe("pending");
+      expect(dNoConvAttempt1.patch.last_outcome).toBe("no_conversation");
+      expect(dNoConvAttempt1.patch.metadata).toEqual({
+        retry_agent_id: "agent-loan-test",
+      });
+      expect(dNoConvAttempt1.patch.next_attempt_at).toBe(
+        new Date(NOW + 5 * 60 * 1000).toISOString(),
+      );
+    }
+  });
+});
+
 describe("callbackTime", () => {
   it("returns the requested time when it is in the future", () => {
     const future = new Date(NOW + 5000).toISOString();
@@ -350,3 +819,4 @@ const _allTriggers: CampaignRetryTrigger[] = [
   "canceled",
 ];
 void _allTriggers;
+

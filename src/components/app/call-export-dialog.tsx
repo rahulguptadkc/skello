@@ -26,11 +26,10 @@ import {
   resolveExportRange,
 } from "@/components/app/export-range-picker";
 import type { CallDirection, CallStatus } from "@/types/call";
+import { ExportRangePreset } from "@/lib/csv-date-ranges";
 
-// Date-free filter set. The dialog owns the date dimension via its own
-// range picker; including `from`/`to` here would double-apply once with
-// the conversations page's range filter and again with the dialog's.
 export interface ConversationsExportFilters {
+  range?: "24h" | "7d" | "30d" | "all";
   direction?: CallDirection;
   status?: CallStatus;
   agent_id?: string;
@@ -51,8 +50,23 @@ interface CountState {
 const DEFAULT_COUNT_STATE: CountState = {
   filtered: null,
   all: null,
-  cap: 10_000,
+  cap: 50_000,
 };
+
+function rangeToPreset(range: string | undefined): ExportRangePreset {
+  switch (range) {
+    case "24h":
+      return "last_24_hours";
+    case "7d":
+      return "last_7_days";
+    case "30d":
+      return "last_30_days";
+    case "all":
+      return "all";
+    default:
+      return "last_7_days";
+  }
+}
 
 function hasAnyFilter(f: ConversationsExportFilters | undefined): boolean {
   if (!f) return false;
@@ -65,7 +79,7 @@ export function CallExportDialog({ tableFilters }: CallExportDialogProps) {
   const [open, setOpen] = React.useState(false);
   const [range, setRange] = React.useState<ExportRangeValue>({
     ...DEFAULT_EXPORT_RANGE_VALUE,
-    preset: "last_7_days",
+    preset: rangeToPreset(tableFilters?.range),
   });
   const [scope, setScope] = React.useState<ExportScope | null>(null);
   const [counts, setCounts] = React.useState<CountState>(DEFAULT_COUNT_STATE);
@@ -73,11 +87,14 @@ export function CallExportDialog({ tableFilters }: CallExportDialogProps) {
 
   const hasActiveFilters = hasAnyFilter(tableFilters);
 
-  // Reset scope + counts when the dialog transitions to open. Lives in
-  // the open handler (not a useEffect) per react-hooks/set-state-in-effect.
+  // Sync range and preselect filtered scope when the dialog opens
   function handleOpenChange(next: boolean) {
     if (next && !open) {
-      setScope(hasActiveFilters ? null : "all");
+      setRange({
+        ...DEFAULT_EXPORT_RANGE_VALUE,
+        preset: rangeToPreset(tableFilters?.range),
+      });
+      setScope(hasActiveFilters ? "filtered" : "all");
       setCounts(DEFAULT_COUNT_STATE);
     }
     setOpen(next);

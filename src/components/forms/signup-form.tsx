@@ -21,8 +21,6 @@ export function SignupForm() {
     const password = String(formData.get("password") ?? "");
     const confirmPassword = String(formData.get("confirmPassword") ?? "");
 
-    // Catch the mismatch on the client so the user gets instant feedback;
-    // the server action re-validates via signupSchema as defence in depth.
     if (password !== confirmPassword) {
       const message = "Passwords do not match";
       setError(message);
@@ -49,6 +47,7 @@ export function SignupForm() {
 
   return (
     <form action={onSubmit} className="flex flex-col gap-4">
+
       <div className="grid gap-1.5">
         <Label htmlFor="organisationName">Workspace name</Label>
         <Input
@@ -61,6 +60,7 @@ export function SignupForm() {
           disabled={pending}
         />
       </div>
+
       <div className="grid gap-1.5">
         <Label htmlFor="email">Work email</Label>
         <Input
@@ -73,6 +73,7 @@ export function SignupForm() {
           disabled={pending}
         />
       </div>
+
       <div className="grid gap-1.5">
         <Label htmlFor="password">Password</Label>
         <PasswordInput
@@ -87,6 +88,7 @@ export function SignupForm() {
           Use at least 8 characters.
         </p>
       </div>
+
       <div className="grid gap-1.5">
         <Label htmlFor="confirmPassword">Confirm password</Label>
         <PasswordInput
@@ -98,12 +100,14 @@ export function SignupForm() {
           disabled={pending}
         />
       </div>
+
       {error ? (
         <p className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
           {error}
         </p>
       ) : null}
-      <Button type="submit" size="lg" disabled={pending}>
+
+      <Button type="submit" size="lg" disabled={pending} className="mt-2">
         {pending ? <Loader2Icon className="animate-spin" /> : null}
         {pending ? "Creating workspace…" : "Create workspace"}
       </Button>

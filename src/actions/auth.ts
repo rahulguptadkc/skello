@@ -122,7 +122,8 @@ export async function login(
     return ok({ redirectTo: "/login" });
   }
 
-  const { data: profile } = await supabase
+  const admin = createAdminClient();
+  const { data: profile } = await admin
     .from("profiles")
     .select("is_admin")
     .eq("id", user.id)
@@ -132,13 +133,48 @@ export async function login(
   if (profile?.is_admin) {
     redirectTo = "/admin";
   } else {
-    const { data: org } = await supabase
-      .from("organisations")
-      .select("id")
-      .eq("owner_id", user.id)
+    const userEmail = (user.email ?? "").toLowerCase().trim();
+
+    // Check if user has a membership by user_id or email
+    let { data: member } = await admin
+      .from("organisation_members")
+      .select("id, organisation_id, user_id, status")
+      .eq("user_id", user.id)
+      .neq("status", "suspended")
       .limit(1)
-      .maybeSingle();
-    redirectTo = org ? "/dashboard" : "/onboarding";
+      .maybeSingle<{ id: string; organisation_id: string; user_id: string | null; status: string }>();
+
+    if (!member && userEmail) {
+      const { data: byEmail } = await admin
+        .from("organisation_members")
+        .select("id, organisation_id, user_id, status")
+        .ilike("email", userEmail)
+        .neq("status", "suspended")
+        .limit(1)
+        .maybeSingle<{ id: string; organisation_id: string; user_id: string | null; status: string }>();
+      member = byEmail;
+    }
+
+    if (member) {
+      // Ensure user_id is bound and status is active upon logging in
+      if (member.user_id !== user.id || member.status !== "active") {
+        await admin
+          .from("organisation_members")
+          .update({ user_id: user.id, status: "active" })
+          .eq("id", member.id);
+      }
+      redirectTo = "/dashboard";
+    } else {
+      // Fallback: check if user owns an organisation directly
+      const { data: ownedOrg } = await admin
+        .from("organisations")
+        .select("id")
+        .eq("owner_id", user.id)
+        .limit(1)
+        .maybeSingle();
+
+      redirectTo = ownedOrg ? "/dashboard" : "/onboarding";
+    }
   }
 
   revalidatePath("/", "layout");

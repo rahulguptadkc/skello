@@ -22,7 +22,7 @@ export default async function SignupPage() {
     <div className="grid min-h-screen w-full lg:grid-cols-2">
       <div className="flex flex-col px-6 py-8 md:px-12">
         <Logo />
-        <div className="mx-auto flex w-full max-w-sm flex-1 flex-col justify-center py-12">
+        <div className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center py-12">
           <div className="mb-8 space-y-1.5">
             <h1 className="font-heading text-2xl font-semibold leading-tight tracking-tight">
               Create your workspace

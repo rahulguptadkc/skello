@@ -24,15 +24,10 @@ export async function requireUser(): Promise<{
 /**
  * May this user administer this organisation?
  *
- * Two ways in: platform staff (`profiles.is_admin`), or the org's own owner.
- * There is no membership model in this codebase — tenancy is single-owner via
- * `organisations.owner_id` — so "org admin" and "org owner" are the same
- * person by construction.
- *
- * Lives here because it is a security boundary that was copy-pasted into
- * `actions/lead-field-definitions.ts` and `actions/voice-agents.ts`
- * independently. Two copies of an authorisation check is one copy away from
- * two behaviours.
+ * Three ways in:
+ * 1. Platform staff (`profiles.is_admin`)
+ * 2. The organisation's primary creator/owner (`organisations.owner_id`)
+ * 3. An assigned organisation admin in `organisation_members` with `role = 'admin'`
  */
 export async function userCanManageOrg(
   supabase: SupabaseServerClient,
@@ -46,11 +41,23 @@ export async function userCanManageOrg(
     .maybeSingle<{ is_admin: boolean }>();
   if (profile?.is_admin) return true;
 
-  const { data } = await supabase
+  const { data: org } = await supabase
     .from("organisations")
     .select("id")
     .eq("id", organisationId)
     .eq("owner_id", userId)
     .maybeSingle<{ id: string }>();
-  return !!data;
+  if (org) return true;
+
+  const { data: member } = await supabase
+    .from("organisation_members")
+    .select("id")
+    .eq("organisation_id", organisationId)
+    .eq("user_id", userId)
+    .eq("role", "admin")
+    .eq("status", "active")
+    .maybeSingle<{ id: string }>();
+
+  return !!member;
 }
+

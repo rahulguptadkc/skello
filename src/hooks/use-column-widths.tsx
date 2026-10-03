@@ -19,6 +19,7 @@ export function useColumnWidths(storageKey: string) {
       if (!raw) return;
       const parsed = JSON.parse(raw);
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setWidths(parsed as Record<string, number>);
       }
     } catch {

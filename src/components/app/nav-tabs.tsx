@@ -1,4 +1,8 @@
+"use client";
+
+import * as React from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 import { cn } from "@/lib/utils";
 
@@ -37,6 +41,15 @@ export function NavTabs({
   className?: string;
   "aria-label"?: string;
 }) {
+  const router = useRouter();
+  const [clickedHref, setClickedHref] = React.useState<string | null>(null);
+  const [, startTransition] = React.useTransition();
+
+  // Reset optimistic clicked state once items change
+  React.useEffect(() => {
+    setClickedHref(null);
+  }, [items]);
+
   return (
     <nav
       aria-label={ariaLabel}
@@ -48,36 +61,55 @@ export function NavTabs({
         className,
       )}
     >
-      {items.map((item) => (
-        <Link
-          key={item.href}
-          href={item.href}
-          aria-current={item.active ? "page" : undefined}
-          className={cn(
-            // -mb-px pulls the active underline onto the nav's own border so the
-            // two read as one line rather than a double rule.
-            "-mb-px inline-flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2 text-sm font-medium whitespace-nowrap transition-colors",
-            "focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
-            item.active
-              ? "border-primary text-foreground"
-              : "border-transparent text-muted-foreground hover:text-foreground",
-            "[&_svg]:size-4 [&_svg]:shrink-0",
-          )}
-        >
-          {item.icon}
-          {item.label}
-          {item.count !== undefined ? (
-            <span
-              className={cn(
-                "text-xs tabular-nums",
-                item.active ? "text-muted-foreground" : "text-muted-foreground/70",
-              )}
-            >
-              {item.count}
-            </span>
-          ) : null}
-        </Link>
-      ))}
+      {items.map((item) => {
+        const isCurrent =
+          clickedHref !== null ? clickedHref === item.href : item.active;
+
+        return (
+          <Link
+            key={item.href}
+            href={item.href}
+            aria-current={isCurrent ? "page" : undefined}
+            onClick={(e) => {
+              if (
+                e.button === 0 &&
+                !e.metaKey &&
+                !e.ctrlKey &&
+                !e.shiftKey &&
+                !e.altKey
+              ) {
+                setClickedHref(item.href);
+                startTransition(() => {
+                  router.push(item.href);
+                });
+              }
+            }}
+            className={cn(
+              // -mb-px pulls the active underline onto the nav's own border so the
+              // two read as one line rather than a double rule.
+              "-mb-px inline-flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2 text-sm font-medium whitespace-nowrap transition-colors",
+              "focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
+              isCurrent
+                ? "border-primary text-foreground"
+                : "border-transparent text-muted-foreground hover:text-foreground",
+              "[&_svg]:size-4 [&_svg]:shrink-0",
+            )}
+          >
+            {item.icon}
+            {item.label}
+            {item.count !== undefined ? (
+              <span
+                className={cn(
+                  "text-xs tabular-nums",
+                  isCurrent ? "text-muted-foreground" : "text-muted-foreground/70",
+                )}
+              >
+                {item.count}
+              </span>
+            ) : null}
+          </Link>
+        );
+      })}
     </nav>
   );
 }
