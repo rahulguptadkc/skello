@@ -1,8 +1,10 @@
 "use server";
 
+import { cache } from "react";
 import { revalidatePath } from "next/cache";
 
 import { requireUser, userCanManageOrg } from "@/lib/auth/org-access";
+import { requireSession } from "@/lib/auth/session";
 import { createAdminClient } from "@/lib/supabase/admin";
 import {
   deleteLeadFieldDefinitionSchema,
@@ -17,6 +19,38 @@ const COLUMNS =
   "visible_in_table, filterable, sortable, searchable, display_order, " +
   "sample_value, enum_options, last_seen_at, created_at, updated_at";
 
+const listLeadFieldDefinitionsCached = cache(
+  async (
+    organisation_id: string,
+    visible_only: boolean,
+  ): Promise<ActionResult<LeadFieldDefinition[]>> => {
+    const session = await requireSession();
+    if (session.organisation.id !== organisation_id && session.role !== "admin") {
+      const { supabase, user } = await requireUser();
+      if (!user || !(await userCanManageOrg(supabase, user.id, organisation_id))) {
+        return fail("Forbidden");
+      }
+    }
+
+    const admin = createAdminClient();
+    let query = admin
+      .from("lead_field_definitions")
+      .select(COLUMNS)
+      .eq("organisation_id", organisation_id);
+
+    if (visible_only) query = query.eq("visible_in_table", true);
+
+    const { data, error } = await query
+      .order("visible_in_table", { ascending: false })
+      .order("display_order", { ascending: true })
+      .order("key_path", { ascending: true })
+      .returns<LeadFieldDefinition[]>();
+
+    if (error) return fail(error.message);
+    return ok(data ?? []);
+  },
+);
+
 export async function listLeadFieldDefinitions(
   input: unknown,
 ): Promise<ActionResult<LeadFieldDefinition[]>> {
@@ -24,29 +58,10 @@ export async function listLeadFieldDefinitions(
   if (!parsed.success) {
     return fail(parsed.error.issues[0]?.message ?? "Invalid input");
   }
-
-  const { supabase, user } = await requireUser();
-  if (!user) return fail("Not authenticated");
-  if (!(await userCanManageOrg(supabase, user.id, parsed.data.organisation_id))) {
-    return fail("Forbidden");
-  }
-
-  const admin = createAdminClient();
-  let query = admin
-    .from("lead_field_definitions")
-    .select(COLUMNS)
-    .eq("organisation_id", parsed.data.organisation_id);
-
-  if (parsed.data.visible_only) query = query.eq("visible_in_table", true);
-
-  const { data, error } = await query
-    .order("visible_in_table", { ascending: false })
-    .order("display_order", { ascending: true })
-    .order("key_path", { ascending: true })
-    .returns<LeadFieldDefinition[]>();
-
-  if (error) return fail(error.message);
-  return ok(data ?? []);
+  return listLeadFieldDefinitionsCached(
+    parsed.data.organisation_id,
+    Boolean(parsed.data.visible_only),
+  );
 }
 
 export async function updateLeadFieldDefinition(

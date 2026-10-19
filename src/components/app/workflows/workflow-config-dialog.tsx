@@ -189,7 +189,7 @@ export function WorkflowConfigDialog({
   const curlSnippet = React.useMemo(() => {
     const id = workflowId || "wf_current";
     return `# Fetch live workflow configuration schema
-curl -X GET "https://api.skello.io/v1/workflows/${id}/config" \\
+curl -X GET "https://api.skelliik o.io/v1/workflows/${id}/config" \\
   -H "Authorization: Bearer YOUR_API_KEY" \\
   -H "Content-Type: application/json"`;
   }, [workflowId]);

@@ -3,6 +3,7 @@ import { requireSession } from "@/lib/auth/session";
 import { Topbar } from "@/components/app/topbar";
 import { SidebarNav } from "@/components/app/sidebar-nav";
 import { MobileNav } from "@/components/app/mobile-nav";
+import { QueryProvider } from "@/components/providers/query-provider";
 import {
   AppShellGrid,
   AppShellProvider,
@@ -30,7 +31,8 @@ export default async function AppLayout({
   };
 
   return (
-    <AppShellProvider>
+    <QueryProvider>
+      <AppShellProvider>
       <AppShellGrid>
         <SidebarNav {...nav} />
         <div className="flex min-w-0 flex-col">
@@ -53,5 +55,6 @@ export default async function AppLayout({
         </div>
       </AppShellGrid>
     </AppShellProvider>
-  );
+  </QueryProvider>
+);
 }

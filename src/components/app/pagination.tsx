@@ -7,18 +7,20 @@ export interface PaginationProps {
   total: number;
   pageSize: number;
   currentPage: number; // 1-based
-  baseHref: string;
+  baseHref?: string;
   // Other URL search params to preserve when paging (filters, etc.).
   // Pass `searchParams` from the page directly; entries with undefined
   // values are dropped.
   preserveParams?: Record<string, string | string[] | undefined>;
+  onPageChange?: (page: number) => void;
 }
 
 function buildHref(
-  baseHref: string,
+  baseHref: string | undefined,
   page: number,
   preserveParams: PaginationProps["preserveParams"],
 ): string {
+  if (!baseHref) return "#";
   const params = new URLSearchParams();
   if (preserveParams) {
     for (const [k, v] of Object.entries(preserveParams)) {
@@ -54,6 +56,7 @@ export function Pagination({
   currentPage,
   baseHref,
   preserveParams,
+  onPageChange,
 }: PaginationProps) {
   if (total <= 0) return null;
 
@@ -64,31 +67,36 @@ export function Pagination({
 
   if (totalPages <= 1) {
     return (
-      <div className="flex items-center justify-end px-1 text-xs text-muted-foreground">
-        Showing {start}–{end} of {total.toLocaleString()}
+      <div className="flex items-center justify-between px-1 text-xs text-muted-foreground">
+        <div>
+          Showing <span className="tabular-nums font-medium text-foreground">{start}</span>–
+          <span className="tabular-nums font-medium text-foreground">{end}</span> of{" "}
+          <span className="tabular-nums font-medium text-foreground">{total.toLocaleString()}</span> leads
+        </div>
       </div>
     );
   }
 
   const pages = pageList(safePage, totalPages);
-  const prevHref = buildHref(baseHref, safePage - 1, preserveParams);
-  const nextHref = buildHref(baseHref, safePage + 1, preserveParams);
+  const prevHref = baseHref ? buildHref(baseHref, safePage - 1, preserveParams) : "#";
+  const nextHref = baseHref ? buildHref(baseHref, safePage + 1, preserveParams) : "#";
   const hasPrev = safePage > 1;
   const hasNext = safePage < totalPages;
 
   return (
     <div className="flex flex-col items-center justify-between gap-3 px-1 sm:flex-row">
       <div className="text-xs text-muted-foreground">
-        Showing <span className="tabular-nums">{start}</span>–
-        <span className="tabular-nums">{end}</span> of{" "}
-        <span className="tabular-nums">{total.toLocaleString()}</span>
+        Showing <span className="tabular-nums font-medium text-foreground">{start}</span>–
+        <span className="tabular-nums font-medium text-foreground">{end}</span> of{" "}
+        <span className="tabular-nums font-medium text-foreground">{total.toLocaleString()}</span> leads
       </div>
       <nav
         aria-label="Pagination"
-        className="inline-flex items-center gap-1 rounded-lg border border-border/70 bg-card p-1"
+        className="inline-flex items-center gap-1 rounded-lg border border-border/70 bg-card p-1 shadow-xs"
       >
         <PageLink
-          href={prevHref}
+          href={baseHref ? prevHref : undefined}
+          onClick={onPageChange ? () => onPageChange(safePage - 1) : undefined}
           disabled={!hasPrev}
           aria-label="Previous page"
         >
@@ -106,7 +114,8 @@ export function Pagination({
           ) : (
             <PageLink
               key={p}
-              href={buildHref(baseHref, p, preserveParams)}
+              href={baseHref ? buildHref(baseHref, p, preserveParams) : undefined}
+              onClick={onPageChange ? () => onPageChange(p) : undefined}
               active={p === safePage}
               aria-label={`Page ${p}`}
               aria-current={p === safePage ? "page" : undefined}
@@ -116,7 +125,8 @@ export function Pagination({
           ),
         )}
         <PageLink
-          href={nextHref}
+          href={baseHref ? nextHref : undefined}
+          onClick={onPageChange ? () => onPageChange(safePage + 1) : undefined}
           disabled={!hasNext}
           aria-label="Next page"
         >
@@ -132,19 +142,21 @@ function PageLink({
   children,
   active,
   disabled,
+  onClick,
   ...rest
 }: {
-  href: string;
+  href?: string;
   children: React.ReactNode;
   active?: boolean;
   disabled?: boolean;
-} & Omit<React.ComponentProps<"a">, "href" | "children">) {
+  onClick?: () => void;
+} & Omit<React.ComponentProps<"a">, "href" | "children" | "onClick">) {
   const className = cn(
-    "inline-flex h-7 min-w-7 items-center justify-center rounded-md px-2 text-xs font-medium tabular-nums transition-colors",
+    "inline-flex h-7 min-w-7 items-center justify-center rounded-md px-2 text-xs font-medium tabular-nums transition-colors cursor-pointer select-none",
     active
-      ? "bg-foreground text-background"
+      ? "bg-foreground text-background font-semibold shadow-xs"
       : "text-muted-foreground hover:bg-muted hover:text-foreground",
-    disabled && "pointer-events-none opacity-40",
+    disabled && "pointer-events-none opacity-40 cursor-not-allowed",
   );
   if (disabled) {
     return (
@@ -153,8 +165,20 @@ function PageLink({
       </span>
     );
   }
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        className={className}
+        aria-current={active ? "page" : undefined}
+      >
+        {children}
+      </button>
+    );
+  }
   return (
-    <Link href={href} className={className} {...rest}>
+    <Link href={href ?? "#"} className={className} {...rest}>
       {children}
     </Link>
   );

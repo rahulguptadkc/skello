@@ -37,12 +37,45 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import dynamic from "next/dynamic";
+import {
+  useQuery,
+  useQueryClient,
+  keepPreviousData,
+} from "@tanstack/react-query";
+
 import { PendingActionBadge } from "@/components/app/pending-action-badge";
-import { InfiniteScrollFooter } from "@/components/app/infinite-scroll-footer";
-import { LeadDetailSheet } from "@/components/app/lead-detail-sheet";
-import { LeadExportDialog } from "@/components/app/lead-export-dialog";
-import { ReminderDialog } from "@/components/app/reminder-dialog";
-import { WhatsAppDialog } from "@/components/app/whatsapp-dialog";
+import { Pagination } from "@/components/app/pagination";
+import { TableSkeleton } from "@/components/app/skeletons";
+
+const LeadDetailSheet = dynamic(
+  () =>
+    import("@/components/app/lead-detail-sheet").then(
+      (mod) => mod.LeadDetailSheet,
+    ),
+  { ssr: false },
+);
+const LeadExportDialog = dynamic(
+  () =>
+    import("@/components/app/lead-export-dialog").then(
+      (mod) => mod.LeadExportDialog,
+    ),
+  { ssr: false },
+);
+const ReminderDialog = dynamic(
+  () =>
+    import("@/components/app/reminder-dialog").then(
+      (mod) => mod.ReminderDialog,
+    ),
+  { ssr: false },
+);
+const WhatsAppDialog = dynamic(
+  () =>
+    import("@/components/app/whatsapp-dialog").then(
+      (mod) => mod.WhatsAppDialog,
+    ),
+  { ssr: false },
+);
 import { WhatsAppIcon } from "@/components/brand/whatsapp-icon";
 import { deleteLead, toggleLeadPendingAction } from "@/actions/leads";
 import { initiateCall } from "@/actions/calls";
@@ -57,7 +90,6 @@ import { cn } from "@/lib/utils";
 import { useClientNow } from "@/hooks/use-client-now";
 import { useCallsRealtime } from "@/hooks/use-calls-realtime";
 import { ColumnResizeHandle, useColumnWidths } from "@/hooks/use-column-widths";
-import { useInfiniteList } from "@/hooks/use-infinite-list";
 import { useLeadsRealtime } from "@/hooks/use-leads-realtime";
 import type { Lead, LeadIntent, LeadStatus } from "@/types/lead";
 import type { LeadFieldDefinition } from "@/types/lead-field-definition";
@@ -197,9 +229,10 @@ function defaultWidthFor(def: LeadFieldDefinition): number {
 }
 
 interface LeadsActivityTableProps {
-  rows: LeadWithCallActivity[];
-  total: number;
-  pageSize: number;
+  rows?: LeadWithCallActivity[];
+  total?: number;
+  pageSize?: number;
+  initialPage?: number;
   organisationId: string;
   orgSlug: string;
   includeZeroCalls: boolean;
@@ -242,9 +275,10 @@ function dataTypeToSortType(
 }
 
 export function LeadsActivityTable({
-  rows,
-  total,
-  pageSize,
+  rows = [],
+  total = 0,
+  pageSize = 20,
+  initialPage = 1,
   organisationId,
   orgSlug,
   includeZeroCalls,
@@ -257,10 +291,18 @@ export function LeadsActivityTable({
   const router = useRouter();
   const now = useClientNow();
 
+  const [page, setPage] = React.useState(initialPage);
   const [search, setSearch] = React.useState(initialSearch);
   const [appliedSearch, setAppliedSearch] = React.useState(initialSearch);
   const [filters, setFilters] = React.useState<DynamicFilterValue[]>([]);
   const [sort, setSort] = React.useState<SortState | null>(null);
+
+  const queryClient = useQueryClient();
+
+  // Sync state if server props change (e.g. status tab switch)
+  React.useEffect(() => {
+    if (initialPage) setPage(initialPage);
+  }, [initialPage]);
 
   // Per-user column widths, persisted in localStorage and scoped by org so
   // each workspace remembers its own layout. `widthFor` resolves to the
@@ -312,12 +354,47 @@ export function LeadsActivityTable({
     ];
   }, [filters, statusFilter]);
 
-  const fetchPage = React.useCallback(
-    async (offset: number, limit: number) => {
+  const queryKey = React.useMemo(
+    () =>
+      [
+        "leads",
+        orgSlug,
+        includeZeroCalls,
+        statusFilter,
+        page,
+        pageSize,
+        wireFilters,
+        sort,
+        appliedSearch,
+      ] as const,
+    [
+      orgSlug,
+      includeZeroCalls,
+      statusFilter,
+      page,
+      pageSize,
+      wireFilters,
+      sort,
+      appliedSearch,
+    ],
+  );
+
+  // Initial data from Server Component is matched if we are on initial defaults
+  const isDefaultView =
+    rows.length > 0 &&
+    page === initialPage &&
+    wireFilters.length === (statusFilter ? 1 : 0) &&
+    sort === null &&
+    appliedSearch === (initialSearch ?? "");
+
+  const { data: queryData, isFetching } = useQuery({
+    queryKey,
+    queryFn: async () => {
+      const offset = (page - 1) * pageSize;
       const res = await listLeadsWithCallActivity({
         org_slug: orgSlug,
         include_zero_calls: includeZeroCalls,
-        limit,
+        limit: pageSize,
         offset,
         filters: wireFilters,
         sort_by: sort ?? undefined,
@@ -325,12 +402,96 @@ export function LeadsActivityTable({
       });
       if (!res.success) {
         toast.error(res.error);
-        return null;
+        throw new Error(res.error);
       }
       return res.data;
     },
-    [orgSlug, includeZeroCalls, wireFilters, sort, appliedSearch],
-  );
+    initialData: isDefaultView ? { items: rows, total } : undefined,
+    placeholderData: keepPreviousData,
+    staleTime: 60 * 1000,
+  });
+
+  const items = queryData?.items ?? rows;
+  const liveTotal = queryData?.total ?? total;
+  const loading = isFetching;
+
+  // Background prefetch the next page for instantaneous 0ms pagination transitions
+  React.useEffect(() => {
+    const totalPages = Math.ceil(liveTotal / pageSize);
+    // Only prefetch after current page finishes fetching to avoid network contention
+    if (page < totalPages && !isFetching) {
+      const nextPage = page + 1;
+      const nextKey = [
+        "leads",
+        orgSlug,
+        includeZeroCalls,
+        statusFilter,
+        nextPage,
+        pageSize,
+        wireFilters,
+        sort,
+        appliedSearch,
+      ] as const;
+      void queryClient.prefetchQuery({
+        queryKey: nextKey,
+        queryFn: async () => {
+          const res = await listLeadsWithCallActivity({
+            org_slug: orgSlug,
+            include_zero_calls: includeZeroCalls,
+            limit: pageSize,
+            offset: (nextPage - 1) * pageSize,
+            filters: wireFilters,
+            sort_by: sort ?? undefined,
+            search: appliedSearch || undefined,
+          });
+          if (!res.success) throw new Error(res.error);
+          return res.data;
+        },
+        staleTime: 60 * 1000,
+      });
+    }
+  }, [
+    page,
+    liveTotal,
+    pageSize,
+    orgSlug,
+    includeZeroCalls,
+    statusFilter,
+    wireFilters,
+    sort,
+    appliedSearch,
+    queryClient,
+  ]);
+
+  const handlePageChange = React.useCallback((newPage: number) => {
+    setPage(newPage);
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      if (newPage > 1) {
+        params.set("page", String(newPage));
+      } else {
+        params.delete("page");
+      }
+      const qs = params.toString();
+      window.history.replaceState(null, "", qs ? `/leads?${qs}` : "/leads");
+    }
+  }, []);
+
+  // When client filters, search or sort change: reset to page 1
+  const isFirstRender = React.useRef(true);
+  React.useEffect(() => {
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      return;
+    }
+    setPage(1);
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      params.delete("page");
+      const qs = params.toString();
+      window.history.replaceState(null, "", qs ? `/leads?${qs}` : "/leads");
+    }
+  }, [sort, wireFilters, appliedSearch]);
 
   // Click a sortable header → cycle none → desc → asc → none.
   // Switching to a different column always starts at desc (most-recent-first
@@ -366,34 +527,51 @@ export function LeadsActivityTable({
     setSort(null);
   }
 
-  const {
-    items,
-    total: liveTotal,
-    loading,
-    hasMore,
-    pagedBeyondInitial,
-    sentinelRef,
-    updateItem,
-    removeItem,
-  } = useInfiniteList<LeadWithCallActivity>({
-    initialItems: rows,
-    initialTotal: total,
-    pageSize,
-    fetchPage,
-    // Re-fetch from offset 0 whenever client-side query state changes —
-    // sort toggle on a header, filter chip added/edited, search submitted.
-    // Without this, the table keeps showing the server-rendered initial
-    // page (no sort/filter) while later-scrolled pages reflect the new
-    // params, producing an inconsistent list.
-    resetKey: JSON.stringify({
-      sort,
-      wireFilters,
-      appliedSearch,
-    }),
-  });
+  const updateItem = React.useCallback(
+    (
+      predicate: (item: LeadWithCallActivity) => boolean,
+      patch:
+        | Partial<LeadWithCallActivity>
+        | ((prev: LeadWithCallActivity) => LeadWithCallActivity),
+    ) => {
+      queryClient.setQueryData<{
+        items: LeadWithCallActivity[];
+        total: number;
+      }>(queryKey, (old) => {
+        if (!old) return old;
+        return {
+          ...old,
+          items: old.items.map((item) => {
+            if (!predicate(item)) return item;
+            return typeof patch === "function"
+              ? patch(item)
+              : { ...item, ...patch };
+          }),
+        };
+      });
+    },
+    [queryClient, queryKey],
+  );
 
-  useLeadsRealtime(orgSlug, pagedBeyondInitial);
-  useCallsRealtime(organisationId, pagedBeyondInitial);
+  const removeItem = React.useCallback(
+    (predicate: (item: LeadWithCallActivity) => boolean) => {
+      queryClient.setQueryData<{
+        items: LeadWithCallActivity[];
+        total: number;
+      }>(queryKey, (old) => {
+        if (!old) return old;
+        return {
+          ...old,
+          items: old.items.filter((item) => !predicate(item)),
+          total: Math.max(0, old.total - 1),
+        };
+      });
+    },
+    [queryClient, queryKey],
+  );
+
+  useLeadsRealtime(orgSlug, page > 1);
+  useCallsRealtime(organisationId, page > 1);
 
   const [waLead, setWaLead] = React.useState<Lead | null>(null);
   const [waOpen, setWaOpen] = React.useState(false);
@@ -585,7 +763,12 @@ export function LeadsActivityTable({
         </div>
       ) : null}
 
-      {items.length === 0 ? (
+      {loading && !queryData ? (
+        <TableSkeleton
+          rows={pageSize}
+          columns={Math.max(6, visibleColumns.length + 2)}
+        />
+      ) : items.length === 0 ? (
         <Empty className="border py-16">
           <EmptyHeader>
             <EmptyMedia variant="icon" className="size-12 rounded-full">
@@ -649,7 +832,12 @@ export function LeadsActivityTable({
                   />
                 </th>
               </DataTableHead>
-              <tbody className="divide-y divide-border/60">
+              <tbody
+                className={cn(
+                  "divide-y divide-border/60 transition-opacity duration-150",
+                  loading && "opacity-50 pointer-events-none",
+                )}
+              >
                 {items.map((row) => (
                   <LeadTableRow
                     key={row.id}
@@ -670,13 +858,14 @@ export function LeadsActivityTable({
         </DataTableCard>
       )}
 
-      <InfiniteScrollFooter
-        loading={loading}
-        hasMore={hasMore}
-        loadedCount={items.length}
-        total={liveTotal}
-        sentinelRef={sentinelRef}
-      />
+      <div className="py-2">
+        <Pagination
+          total={liveTotal}
+          pageSize={pageSize}
+          currentPage={page}
+          onPageChange={handlePageChange}
+        />
+      </div>
 
       {waOpen ? (
         <WhatsAppDialog

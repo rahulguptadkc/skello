@@ -19,13 +19,14 @@ const REFRESH_DEBOUNCE_MS = 1000;
 export function useCallsRealtime(
   organisationId: string | null | undefined,
   paused: boolean = false,
+  onUpdate?: () => void,
 ) {
   const router = useRouter();
-  // Read-through ref so the subscription callback always sees the latest
-  // pause state without rebuilding the channel.
+  // Read-through refs so the subscription callback always sees latest values
   const pausedRef = React.useRef(paused);
-  // eslint-disable-next-line react-hooks/refs
   pausedRef.current = paused;
+  const onUpdateRef = React.useRef(onUpdate);
+  onUpdateRef.current = onUpdate;
 
   React.useEffect(() => {
     if (!organisationId) return;
@@ -37,9 +38,13 @@ export function useCallsRealtime(
       if (pausedRef.current) return;
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
-        React.startTransition(() => {
-          router.refresh();
-        });
+        if (onUpdateRef.current) {
+          onUpdateRef.current();
+        } else {
+          React.startTransition(() => {
+            router.refresh();
+          });
+        }
       }, REFRESH_DEBOUNCE_MS);
     }
 

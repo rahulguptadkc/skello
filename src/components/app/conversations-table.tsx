@@ -26,12 +26,22 @@ import {
 } from "@/components/ui/empty";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import dynamic from "next/dynamic";
+import {
+  useInfiniteQuery,
+  useQueryClient,
+  keepPreviousData,
+} from "@tanstack/react-query";
+
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { CallDetailSheet } from "@/components/app/call-detail";
+const CallDetailSheet = dynamic(
+  () => import("@/components/app/call-detail").then((m) => m.CallDetailSheet),
+  { ssr: false },
+);
 import { InfiniteScrollFooter } from "@/components/app/infinite-scroll-footer";
 import { listConversations } from "@/actions/calls";
 import { formatOutcomeKey } from "@/lib/format";
@@ -41,7 +51,6 @@ import {
   ColumnResizeHandle,
   useColumnWidths,
 } from "@/hooks/use-column-widths";
-import { useInfiniteList } from "@/hooks/use-infinite-list";
 import type {
   CallDirection,
   CallStatus,
@@ -168,28 +177,23 @@ export function ConversationsTable({
     return widths[field] ?? fallback;
   }
 
-  const fetchPage = React.useCallback(
-    async (offset: number, limit: number) => {
-      const res = await listConversations({
-        organisation_id: organisationId,
-        limit,
-        offset,
-        direction: filters.direction,
-        status: filters.status,
-        call_outcome: filters.callOutcome,
-        agent_id: filters.agent,
-        from: filters.from,
-        q: filters.q,
-        campaign_id: filters.campaignId,
-        sort: sort?.field,
-        dir: sort?.dir,
-      });
-      if (!res.success) {
-        toast.error(res.error);
-        return null;
-      }
-      return res.data;
-    },
+  const queryClient = useQueryClient();
+
+  const queryKey = React.useMemo(
+    () =>
+      [
+        "conversations",
+        organisationId,
+        filters.direction ?? null,
+        filters.status ?? null,
+        filters.callOutcome ?? null,
+        filters.agent ?? null,
+        filters.from ?? null,
+        filters.q ?? null,
+        filters.campaignId ?? null,
+        sort?.field ?? null,
+        sort?.dir ?? null,
+      ] as const,
     [
       organisationId,
       filters.direction,
@@ -204,22 +208,72 @@ export function ConversationsTable({
   );
 
   const {
-    items,
-    total: liveTotal,
-    loading,
-    hasMore,
-    pagedBeyondInitial,
-    sentinelRef,
-  } = useInfiniteList<CallWithLead>({
-    initialItems: calls,
-    initialTotal: total,
-    pageSize,
-    fetchPage,
-    // Sort lives in client state — when it changes, refetch from offset 0
-    // so the whole list reflects the new order instead of stitching pages
-    // sorted by different keys.
-    resetKey: JSON.stringify(sort),
+    data,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useInfiniteQuery({
+    queryKey,
+    queryFn: async ({ pageParam = 0 }) => {
+      const res = await listConversations({
+        organisation_id: organisationId,
+        limit: pageSize,
+        offset: pageParam as number,
+        direction: filters.direction,
+        status: filters.status,
+        call_outcome: filters.callOutcome,
+        agent_id: filters.agent,
+        from: filters.from,
+        q: filters.q,
+        campaign_id: filters.campaignId,
+        sort: sort?.field,
+        dir: sort?.dir,
+      });
+      if (!res.success) {
+        toast.error(res.error);
+        throw new Error(res.error);
+      }
+      return res.data;
+    },
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, allPages) => {
+      const loaded = allPages.reduce((acc, p) => acc + p.items.length, 0);
+      return loaded < lastPage.total ? loaded : undefined;
+    },
+    initialData:
+      calls && calls.length > 0 && sort === null
+        ? {
+            pages: [{ items: calls, total }],
+            pageParams: [0],
+          }
+        : undefined,
+    placeholderData: keepPreviousData,
+    staleTime: 30 * 1000,
   });
+
+  const items = data ? data.pages.flatMap((p) => p.items) : calls;
+  const liveTotal = data?.pages[0]?.total ?? total;
+  const loading = isFetchingNextPage;
+  const hasMore = !!hasNextPage;
+  const pagedBeyondInitial = (data?.pages.length ?? 1) > 1;
+
+  // Infinite scroll trigger via IntersectionObserver
+  const sentinelRef = React.useRef<HTMLDivElement | null>(null);
+  React.useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el || !hasNextPage || isFetchingNextPage) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting && hasNextPage && !isFetchingNextPage) {
+          void fetchNextPage();
+        }
+      },
+      { rootMargin: "250px" },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
 
   // Click a sortable header → cycle none → desc → asc → none. New columns
   // start at desc because that's the more useful default for both dates and
@@ -232,7 +286,11 @@ export function ConversationsTable({
     });
   }
 
-  useCallsRealtime(organisationId, pagedBeyondInitial);
+  useCallsRealtime(organisationId, pagedBeyondInitial, () => {
+    void queryClient.invalidateQueries({
+      queryKey: ["conversations", organisationId],
+    });
+  });
 
   // `CallWithLead`, not `Call`: the rows come from listConversations with the
   // lead embedded, and the detail sheet renders that lead's current record.

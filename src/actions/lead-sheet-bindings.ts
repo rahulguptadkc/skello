@@ -1,5 +1,6 @@
 "use server";
 
+import { cache } from "react";
 import { revalidatePath } from "next/cache";
 
 import { requireUser, userCanManageOrg } from "@/lib/auth/org-access";
@@ -20,6 +21,24 @@ const COLUMNS =
   "caption_source_column, caption_category, caption_key_path, caption_static, " +
   "format, created_at, updated_at";
 
+const listLeadSheetBindingsCached = cache(
+  async (): Promise<ActionResult<LeadSheetBinding[]>> => {
+    const session = await requireSession();
+    const supabase = await createClient();
+
+    const { data, error } = await supabase
+      .from("lead_sheet_bindings")
+      .select(COLUMNS)
+      .eq("organisation_id", session.organisation.id)
+      .order("slot", { ascending: true })
+      .order("slot_position", { ascending: true })
+      .returns<LeadSheetBinding[]>();
+
+    if (error) return fail(error.message);
+    return ok(data ?? []);
+  },
+);
+
 /**
  * The lead sheet's own read: bindings for the signed-in user's org.
  *
@@ -30,19 +49,7 @@ const COLUMNS =
 export async function listLeadSheetBindings(): Promise<
   ActionResult<LeadSheetBinding[]>
 > {
-  const session = await requireSession();
-  const supabase = await createClient();
-
-  const { data, error } = await supabase
-    .from("lead_sheet_bindings")
-    .select(COLUMNS)
-    .eq("organisation_id", session.organisation.id)
-    .order("slot", { ascending: true })
-    .order("slot_position", { ascending: true })
-    .returns<LeadSheetBinding[]>();
-
-  if (error) return fail(error.message);
-  return ok(data ?? []);
+  return listLeadSheetBindingsCached();
 }
 
 /** Admin read for the layout editor. Takes an explicit org. */

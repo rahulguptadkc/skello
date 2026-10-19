@@ -1,5 +1,6 @@
 import "server-only";
 
+import { cache } from "react";
 import { redirect } from "next/navigation";
 
 import { createClient } from "@/lib/supabase/server";
@@ -14,7 +15,7 @@ export interface Session {
   memberId?: string;
 }
 
-export async function getSession(): Promise<Session | null> {
+export const getSession = cache(async (): Promise<Session | null> => {
   const supabase = await createClient();
   const {
     data: { user },
@@ -107,9 +108,9 @@ export async function getSession(): Promise<Session | null> {
   }
 
   return null;
-}
+});
 
-export async function requireSession(): Promise<Session> {
+export const requireSession = cache(async (): Promise<Session> => {
   const session = await getSession();
   if (!session) {
     const supabase = await createClient();
@@ -120,5 +121,5 @@ export async function requireSession(): Promise<Session> {
     redirect("/onboarding");
   }
   return session;
-}
+});
 

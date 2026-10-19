@@ -1,9 +1,11 @@
 "use server";
 
+import { cache } from "react";
 import { z } from "zod";
 
 import { logSkeloError } from "@/lib/errors";
 import { createClient } from "@/lib/supabase/server";
+import { requireSession } from "@/lib/auth/session";
 import { orgSlugSchema } from "@/lib/validations/lead";
 import {
   leadActivityFilterSchema as filterSchema,
@@ -165,20 +167,76 @@ export async function listLeadsWithCallActivity(
   }
   const { org_slug, include_zero_calls, limit, offset, filters, sort_by, search } = parsed.data;
 
+  const session = await requireSession();
+  if (session.organisation.slug !== org_slug) return fail("Forbidden");
+  const org = session.organisation;
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return fail("Not authenticated");
 
-  const { data: org } = await supabase
-    .from("organisations")
-    .select("id, slug")
-    .eq("slug", org_slug)
-    .eq("owner_id", user.id)
-    .maybeSingle<{ id: string; slug: string }>();
-  if (!org) return fail("Forbidden");
+  // Fast-path count computation whenever possible to bypass slow CTEs:
+  const countPromise = (async () => {
+    // 1. All leads (including zero calls), unfiltered, no search:
+    if (include_zero_calls && filters.length === 0 && !search) {
+      const { count, error } = await supabase
+        .from("leads")
+        .select("id", { count: "exact", head: true })
+        .eq("organisation_id", org.id)
+        .is("deleted_at", null);
+      if (!error && count !== null) return { data: count, error: null };
+    }
+    // 2. Status-only filter, including zero calls, no search:
+    if (
+      include_zero_calls &&
+      filters.length === 1 &&
+      filters[0].source === "column" &&
+      filters[0].key === "status" &&
+      filters[0].op === "eq" &&
+      !search
+    ) {
+      const { count, error } = await supabase
+        .from("leads")
+        .select("id", { count: "exact", head: true })
+        .eq("organisation_id", org.id)
+        .eq("status", filters[0].value)
+        .is("deleted_at", null);
+      if (!error && count !== null) return { data: count, error: null };
+    }
+    // 3. With-calls (include_zero_calls = false), unfiltered, no search:
+    if (!include_zero_calls && filters.length === 0 && !search) {
+      const res = await getLeadStatusCountsCached(org_slug, false);
+      if (res.success) {
+        const total = (Object.values(res.data) as (number | undefined)[]).reduce<number>(
+          (acc, val) => acc + (val || 0),
+          0,
+        );
+        return { data: total, error: null };
+      }
+    }
+    // 4. Status-only filter, with-calls, no search:
+    if (
+      !include_zero_calls &&
+      filters.length === 1 &&
+      filters[0].source === "column" &&
+      filters[0].key === "status" &&
+      filters[0].op === "eq" &&
+      !search
+    ) {
+      const res = await getLeadStatusCountsCached(org_slug, false);
+      if (res.success) {
+        const total = res.data[filters[0].value as LeadStatus] ?? 0;
+        return { data: total, error: null };
+      }
+    }
+    // Fallback: general RPC
+    return supabase.rpc("lead_call_activity_count", {
+      p_org_id: org.id,
+      p_org_slug: org_slug,
+      p_include_zero_calls: include_zero_calls,
+      p_filters: filters,
+      p_search: search ?? null,
+    });
+  })();
 
+  const t0Activity = performance.now();
   const [itemsRes, countRes] = await Promise.all([
     supabase.rpc("lead_call_activity", {
       p_org_id: org.id,
@@ -190,13 +248,7 @@ export async function listLeadsWithCallActivity(
       p_sort_by: sort_by ?? null,
       p_search: search ?? null,
     }),
-    supabase.rpc("lead_call_activity_count", {
-      p_org_id: org.id,
-      p_org_slug: org_slug,
-      p_include_zero_calls: include_zero_calls,
-      p_filters: filters,
-      p_search: search ?? null,
-    }),
+    countPromise,
   ]);
 
   if (itemsRes.error) {
@@ -241,6 +293,41 @@ const statusCountsInputSchema = z.object({
 export type LeadStatusCounts = Partial<Record<LeadStatus, number>>;
 
 /**
+ * Request-memoized funnel counts for the /leads tab strip.
+ *
+ * Sharing this cache across the page's components means the tab strip,
+ * the table count-estimator, and the lifetime stat cards all share a single
+ * DB round-trip per render pass.
+ */
+export const getLeadStatusCountsCached = cache(
+  async (
+    org_slug: string,
+    include_zero_calls: boolean,
+  ): Promise<ActionResult<LeadStatusCounts>> => {
+    const session = await requireSession();
+    if (session.organisation.slug !== org_slug) return fail("Forbidden");
+    const org = session.organisation;
+    const supabase = await createClient();
+
+    const { data, error } = await supabase.rpc("lead_status_counts", {
+      p_org_id: org.id,
+      p_include_zero_calls: include_zero_calls,
+    });
+    if (error) return fail(error.message);
+
+    const out: LeadStatusCounts = {};
+    for (const row of (data ?? []) as Array<{
+      status: LeadStatus;
+      total: number | string;
+    }>) {
+      // bigint arrives as a string from PostgREST — `+` would concatenate.
+      out[row.status] = Number(row.total);
+    }
+    return ok(out);
+  },
+);
+
+/**
  * The funnel numbers on the /leads tab strip.
  *
  * ⚠️ Workspace-wide: this does NOT honour the table's search or filter chips
@@ -254,37 +341,93 @@ export async function getLeadStatusCounts(
   if (!parsed.success) {
     return fail(parsed.error.issues[0]?.message ?? "Invalid input");
   }
-
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return fail("Not authenticated");
-
-  const { data: org } = await supabase
-    .from("organisations")
-    .select("id")
-    .eq("slug", parsed.data.org_slug)
-    .eq("owner_id", user.id)
-    .maybeSingle<{ id: string }>();
-  if (!org) return fail("Forbidden");
-
-  const { data, error } = await supabase.rpc("lead_status_counts", {
-    p_org_id: org.id,
-    p_include_zero_calls: parsed.data.include_zero_calls,
-  });
-  if (error) return fail(error.message);
-
-  const out: LeadStatusCounts = {};
-  for (const row of (data ?? []) as Array<{
-    status: LeadStatus;
-    total: number | string;
-  }>) {
-    // bigint arrives as a string from PostgREST — `+` would concatenate.
-    out[row.status] = Number(row.total);
-  }
-  return ok(out);
+  return getLeadStatusCountsCached(parsed.data.org_slug, parsed.data.include_zero_calls);
 }
+
+const LIFETIME_STATS_CACHE_TTL_MS = 60 * 1000;
+const lifetimeStatsCache = new Map<
+  string,
+  { expiresAt: number; data: LeadCallLifetimeStats }
+>();
+
+/**
+ * Request-memoized lifetime-wide totals for the leads page stat cards with 60s in-memory TTL.
+ */
+export const getLeadCallLifetimeStatsCached = cache(
+  async (org_slug: string): Promise<ActionResult<LeadCallLifetimeStats>> => {
+    const session = await requireSession();
+    if (session.organisation.slug !== org_slug) return fail("Forbidden");
+    const org = session.organisation;
+
+    const now = Date.now();
+    const cached = lifetimeStatsCache.get(org_slug);
+    if (cached && cached.expiresAt > now) {
+      return ok(cached.data);
+    }
+
+    const supabase = await createClient();
+
+    // Fast contacted leads: reuse memoized lead_status_counts(org.id, false)
+    // so we don't duplicate the RPC or build a massive call aggregates CTE.
+    const [statusCountsRes, inboundRes, outboundRes] = await Promise.all([
+      getLeadStatusCountsCached(org_slug, false),
+      supabase
+        .from("calls")
+        .select("id", { count: "exact", head: true })
+        .eq("organisation_id", org.id)
+        .eq("direction", "inbound")
+        .eq("is_test", false),
+      supabase
+        .from("calls")
+        .select("id", { count: "exact", head: true })
+        .eq("organisation_id", org.id)
+        .eq("direction", "outbound")
+        .eq("is_test", false),
+    ]);
+
+    if (!statusCountsRes.success) {
+      return fail(
+        logSkeloError("LEAD-READ-FAIL", "Lifetime contacted leads failed", {
+          organisationId: org.id,
+          cause: statusCountsRes.error,
+        }),
+      );
+    }
+    if (inboundRes.error) {
+      return fail(
+        logSkeloError("LEAD-READ-FAIL", "Lifetime inbound count failed", {
+          organisationId: org.id,
+          cause: inboundRes.error,
+        }),
+      );
+    }
+    if (outboundRes.error) {
+      return fail(
+        logSkeloError("LEAD-READ-FAIL", "Lifetime outbound count failed", {
+          organisationId: org.id,
+          cause: outboundRes.error,
+        }),
+      );
+    }
+
+    const contactedCount = (
+      Object.values(statusCountsRes.data) as (number | undefined)[]
+    ).reduce<number>((acc, val) => acc + (val || 0), 0);
+
+    const result: LeadCallLifetimeStats = {
+      contacted_leads: contactedCount,
+      inbound_calls: inboundRes.count ?? 0,
+      outbound_calls: outboundRes.count ?? 0,
+    };
+
+    lifetimeStatsCache.set(org_slug, {
+      expiresAt: now + LIFETIME_STATS_CACHE_TTL_MS,
+      data: result,
+    });
+
+    return ok(result);
+  },
+);
 
 // Lifetime-wide totals for the leads page stat cards. Intentionally
 // ignores pagination, the include-zero-calls toggle, search, and filter
@@ -297,84 +440,7 @@ export async function getLeadCallLifetimeStats(
   if (!parsed.success) {
     return fail(parsed.error.issues[0]?.message ?? "Invalid input");
   }
-  const { org_slug } = parsed.data;
-
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return fail("Not authenticated");
-
-  const { data: org } = await supabase
-    .from("organisations")
-    .select("id, slug")
-    .eq("slug", org_slug)
-    .eq("owner_id", user.id)
-    .maybeSingle<{ id: string; slug: string }>();
-  if (!org) return fail("Forbidden");
-
-  // Three parallel counts:
-  //  - contacted_leads: reuse lead_call_activity_count with no filters and
-  //    include_zero_calls=false, which the RPC defines as "leads with at
-  //    least one call". Test calls don't carry a lead_id (the outbound
-  //    webhook short-circuits the lead merge for them) so they don't
-  //    inflate this number — no extra filter needed here.
-  //  - inbound_calls / outbound_calls: direct counts on the `calls` table
-  //    scoped by direction. Filter `is_test = false` so the headline
-  //    cards reflect real activity only; the calls_org_real_only_idx
-  //    partial index covers this WHERE clause.
-  const [contactedRes, inboundRes, outboundRes] = await Promise.all([
-    supabase.rpc("lead_call_activity_count", {
-      p_org_id: org.id,
-      p_org_slug: org_slug,
-      p_include_zero_calls: false,
-      p_filters: [],
-      p_search: null,
-    }),
-    supabase
-      .from("calls")
-      .select("id", { count: "exact", head: true })
-      .eq("organisation_id", org.id)
-      .eq("direction", "inbound")
-      .eq("is_test", false),
-    supabase
-      .from("calls")
-      .select("id", { count: "exact", head: true })
-      .eq("organisation_id", org.id)
-      .eq("direction", "outbound")
-      .eq("is_test", false),
-  ]);
-
-  if (contactedRes.error) {
-    return fail(
-      logSkeloError("LEAD-READ-FAIL", "Lifetime contacted leads failed", {
-        organisationId: org.id,
-        cause: contactedRes.error,
-      }),
-    );
-  }
-  if (inboundRes.error) {
-    return fail(
-      logSkeloError("LEAD-READ-FAIL", "Lifetime inbound count failed", {
-        organisationId: org.id,
-        cause: inboundRes.error,
-      }),
-    );
-  }
-  if (outboundRes.error) {
-    return fail(
-      logSkeloError("LEAD-READ-FAIL", "Lifetime outbound count failed", {
-        organisationId: org.id,
-        cause: outboundRes.error,
-      }),
-    );
-  }
-
-  return ok({
-    contacted_leads: toNumber(contactedRes.data),
-    inbound_calls: inboundRes.count ?? 0,
-    outbound_calls: outboundRes.count ?? 0,
-  });
+  return getLeadCallLifetimeStatsCached(parsed.data.org_slug);
 }
 
 export async function countLeadCallActivity(
@@ -386,19 +452,37 @@ export async function countLeadCallActivity(
   }
   const { org_slug, include_zero_calls, filters, search } = parsed.data;
 
+  const session = await requireSession();
+  if (session.organisation.slug !== org_slug) return fail("Forbidden");
+  const org = session.organisation;
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return fail("Not authenticated");
 
-  const { data: org } = await supabase
-    .from("organisations")
-    .select("id, slug")
-    .eq("slug", org_slug)
-    .eq("owner_id", user.id)
-    .maybeSingle<{ id: string; slug: string }>();
-  if (!org) return fail("Forbidden");
+  // Fast path for layout & unfiltered org-wide count
+  if (include_zero_calls && (!filters || filters.length === 0) && !search) {
+    const { count, error } = await supabase
+      .from("leads")
+      .select("id", { count: "exact", head: true })
+      .eq("organisation_id", org.id)
+      .is("deleted_at", null);
+    if (!error && count !== null) {
+      return ok(count);
+    }
+  }
+
+  // Fast path for unfiltered contacted count (with-calls)
+  if (!include_zero_calls && (!filters || filters.length === 0) && !search) {
+    const { data, error } = await supabase.rpc("lead_status_counts", {
+      p_org_id: org.id,
+      p_include_zero_calls: false,
+    });
+    if (!error && data) {
+      const sum = (data as Array<{ total: number | string }>).reduce(
+        (acc, r) => acc + Number(r.total || 0),
+        0,
+      );
+      return ok(sum);
+    }
+  }
 
   const { data, error } = await supabase.rpc("lead_call_activity_count", {
     p_org_id: org.id,

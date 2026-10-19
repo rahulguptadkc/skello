@@ -1,23 +1,11 @@
-import Link from "next/link";
-import { redirect } from "next/navigation";
+"use client";
 
+import Link from "next/link";
 import { SectionLabel } from "@/components/app/section-label";
 import { Logo } from "@/components/brand/logo";
 import { LoginForm } from "@/components/forms/login-form";
-import { getCurrentUser } from "@/actions/auth";
-import { getIsAdmin } from "@/lib/auth/admin";
 
-export const metadata = {
-  title: "Log in · Skelo",
-};
-
-export default async function LoginPage() {
-  const user = await getCurrentUser();
-  if (user) {
-    const isAdmin = await getIsAdmin();
-    redirect(isAdmin ? "/admin" : "/dashboard");
-  }
-
+export default function LoginPage() {
   return (
     <div className="grid min-h-screen w-full lg:grid-cols-2">
       <div className="flex flex-col px-6 py-8 md:px-12">

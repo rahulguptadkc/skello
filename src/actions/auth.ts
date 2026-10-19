@@ -91,93 +91,89 @@ export async function login(
     return fail(parsed.error.issues[0]?.message ?? "Invalid input");
   }
 
-  // 5 login attempts per minute per IP. Tight enough to thwart casual
-  // credential stuffing without blocking a human typo loop. Per-IP
-  // (not per-email) because the email is attacker-controlled — keying
-  // on it would let an attacker rotate through usernames freely.
-  const ip = clientIpFromHeaders(await headers());
-  const rl = await checkRateLimit({
-    key: `login:ip:${ip}`,
-    windowSeconds: 60,
-    max: 5,
-  });
+  // Concurrently resolve headers/IP and Supabase client
+  const [headerList, supabase] = await Promise.all([
+    headers(),
+    createClient(),
+  ]);
+  const ip = clientIpFromHeaders(headerList);
+
+  // Parallelize IP rate limit check and password authentication over the wire
+  // instead of paying for two sequential round trips.
+  const [rl, authRes] = await Promise.all([
+    checkRateLimit({
+      key: `login:ip:${ip}`,
+      windowSeconds: 60,
+      max: 5,
+    }),
+    supabase.auth.signInWithPassword(parsed.data),
+  ]);
+
   if (!rl.allowed) {
     return fail(
       `Too many login attempts. Try again in ${rl.retryAfterSeconds}s.`,
     );
   }
 
-  const supabase = await createClient();
-  const { error } = await supabase.auth.signInWithPassword(parsed.data);
+  if (authRes.error) return fail(authRes.error.message);
 
-  if (error) return fail(error.message);
-
-  // Pick the landing page server-side based on admin status + org ownership.
-  // Keeps the client form dumb and avoids a flash-then-redirect hop.
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = authRes.data.user;
   if (!user) {
-    revalidatePath("/", "layout");
     return ok({ redirectTo: "/login" });
   }
 
   const admin = createAdminClient();
-  const { data: profile } = await admin
-    .from("profiles")
-    .select("is_admin")
-    .eq("id", user.id)
-    .maybeSingle<{ is_admin: boolean }>();
+  const userEmail = (user.email ?? "").toLowerCase().trim();
 
-  let redirectTo = "/dashboard";
-  if (profile?.is_admin) {
-    redirectTo = "/admin";
-  } else {
-    const userEmail = (user.email ?? "").toLowerCase().trim();
-
-    // Check if user has a membership by user_id or email
-    let { data: member } = await admin
+  // Concurrently resolve admin status, organisation membership (checking user_id
+  // and email in a single OR filter), and owned organisation in ONE parallel round-trip.
+  const [profileRes, memberRes, ownedOrgRes] = await Promise.all([
+    admin
+      .from("profiles")
+      .select("is_admin")
+      .eq("id", user.id)
+      .maybeSingle<{ is_admin: boolean }>(),
+    admin
       .from("organisation_members")
       .select("id, organisation_id, user_id, status")
-      .eq("user_id", user.id)
+      .or(
+        userEmail
+          ? `user_id.eq.${user.id},email.ilike.${userEmail}`
+          : `user_id.eq.${user.id}`,
+      )
       .neq("status", "suspended")
       .limit(1)
-      .maybeSingle<{ id: string; organisation_id: string; user_id: string | null; status: string }>();
+      .maybeSingle<{
+        id: string;
+        organisation_id: string;
+        user_id: string | null;
+        status: string;
+      }>(),
+    admin
+      .from("organisations")
+      .select("id")
+      .eq("owner_id", user.id)
+      .limit(1)
+      .maybeSingle<{ id: string }>(),
+  ]);
 
-    if (!member && userEmail) {
-      const { data: byEmail } = await admin
+  let redirectTo = "/dashboard";
+  if (profileRes.data?.is_admin) {
+    redirectTo = "/admin";
+  } else if (memberRes.data) {
+    const member = memberRes.data;
+    // Bind invited user_id or activate membership if pending
+    if (member.user_id !== user.id || member.status !== "active") {
+      await admin
         .from("organisation_members")
-        .select("id, organisation_id, user_id, status")
-        .ilike("email", userEmail)
-        .neq("status", "suspended")
-        .limit(1)
-        .maybeSingle<{ id: string; organisation_id: string; user_id: string | null; status: string }>();
-      member = byEmail;
+        .update({ user_id: user.id, status: "active" })
+        .eq("id", member.id);
     }
-
-    if (member) {
-      // Ensure user_id is bound and status is active upon logging in
-      if (member.user_id !== user.id || member.status !== "active") {
-        await admin
-          .from("organisation_members")
-          .update({ user_id: user.id, status: "active" })
-          .eq("id", member.id);
-      }
-      redirectTo = "/dashboard";
-    } else {
-      // Fallback: check if user owns an organisation directly
-      const { data: ownedOrg } = await admin
-        .from("organisations")
-        .select("id")
-        .eq("owner_id", user.id)
-        .limit(1)
-        .maybeSingle();
-
-      redirectTo = ownedOrg ? "/dashboard" : "/onboarding";
-    }
+    redirectTo = "/dashboard";
+  } else {
+    redirectTo = ownedOrgRes.data ? "/dashboard" : "/onboarding";
   }
 
-  revalidatePath("/", "layout");
   return ok({ redirectTo });
 }
 

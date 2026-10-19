@@ -1,40 +1,64 @@
 "use client";
 
-import { useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useState } from "react";
 import { Loader2Icon } from "lucide-react";
 import { toast } from "sonner";
 
-import { login } from "@/actions/auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PasswordInput } from "@/components/ui/password-input";
 
 export function LoginForm() {
-  const router = useRouter();
-  const [pending, startTransition] = useTransition();
+  const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  function onSubmit(formData: FormData) {
+  async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
     setError(null);
-    startTransition(async () => {
-      const result = await login({
-        email: String(formData.get("email") ?? ""),
-        password: String(formData.get("password") ?? ""),
-      });
-      if (!result.success) {
-        setError(result.error);
-        toast.error(result.error);
+    setPending(true);
+
+    try {
+      const formData = new FormData(e.currentTarget);
+      const email = String(formData.get("email") ?? "").trim();
+      const password = String(formData.get("password") ?? "");
+
+      if (!email || !password) {
+        setError("Email and password are required");
+        setPending(false);
         return;
       }
+
+      // Send credentials directly to server login API (no direct DB calls from browser)
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ email, password }),
+      });
+
+      const result = await res.json().catch(() => ({}));
+
+      if (!res.ok || !result.success) {
+        const msg = result.error ?? "Invalid login credentials";
+        setError(msg);
+        toast.error(msg);
+        setPending(false);
+        return;
+      }
+
       toast.success("Welcome back");
-      router.replace(result.data.redirectTo);
-    });
+      window.location.href = result.redirectTo || "/dashboard";
+    } catch {
+      setError("An unexpected network error occurred. Please try again.");
+      toast.error("Connection failed");
+      setPending(false);
+    }
   }
 
   return (
-    <form action={onSubmit} className="flex flex-col gap-4">
+    <form onSubmit={onSubmit} className="flex flex-col gap-4">
       <div className="grid gap-1.5">
         <Label htmlFor="email">Work email</Label>
         <Input

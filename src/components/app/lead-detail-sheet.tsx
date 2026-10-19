@@ -42,6 +42,7 @@ import { LeadSummaryPanel } from "@/components/app/lead-detail/summary-panel";
 import { listReminders } from "@/actions/reminders";
 import { listCalls } from "@/actions/calls";
 import { updateLead } from "@/actions/leads";
+import { listLeadSheetBindings } from "@/actions/lead-sheet-bindings";
 import { formatRelative } from "@/lib/format";
 import {
   buildEffectiveCustomData,
@@ -499,7 +500,22 @@ export function LeadDetailSheet({
       }
     : null;
 
-  const allBindings = bindings ?? [];
+  const [loadedBindings, setLoadedBindings] = React.useState<LeadSheetBinding[] | null>(null);
+
+  React.useEffect(() => {
+    if (!open || bindings !== undefined || loadedBindings !== null) return;
+    let cancelled = false;
+    void listLeadSheetBindings().then((res) => {
+      if (!cancelled && res.success) {
+        setLoadedBindings(res.data);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, bindings, loadedBindings]);
+
+  const allBindings = bindings ?? loadedBindings ?? [];
   // `keepUnresolved` for the cards only: the row is a three-column grid and a
   // card that vanishes reflows the other two, which reads as a layout bug
   // rather than as missing data.

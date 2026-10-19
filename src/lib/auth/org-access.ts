@@ -1,5 +1,6 @@
 import "server-only";
 
+import { cache } from "react";
 import { createClient } from "@/lib/supabase/server";
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
@@ -10,16 +11,16 @@ type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
  * Returns `user: null` rather than redirecting — Server Actions answer with
  * `fail("Not authenticated")`, they don't navigate.
  */
-export async function requireUser(): Promise<{
+export const requireUser = cache(async (): Promise<{
   supabase: SupabaseServerClient;
   user: { id: string; email?: string } | null;
-}> {
+}> => {
   const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
   return { supabase, user: user ? { id: user.id, email: user.email } : null };
-}
+});
 
 /**
  * May this user administer this organisation?
