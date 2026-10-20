@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 
+import { dispatchDueAutomations } from "@/lib/automations/dispatch";
 import { dispatchDueCallbacks } from "@/lib/callbacks/dispatch";
 import { dispatchDueCampaignContacts } from "@/lib/campaigns/dispatch";
 import { drainPendingCheckoutEvents } from "@/lib/shopify/checkout-events";
@@ -41,6 +42,7 @@ export async function POST(request: NextRequest) {
       whatsapp,
       codConfirmations,
       checkoutEvents,
+      automations,
     ] = await Promise.allSettled([
       dispatchDueCampaignContacts(),
       dispatchDueCallbacks(),
@@ -48,6 +50,7 @@ export async function POST(request: NextRequest) {
       dispatchDueWhatsAppRecoveries(),
       dispatchDueCodConfirmations(),
       drainPendingCheckoutEvents(),
+      dispatchDueAutomations(),
     ]);
 
     if (
@@ -91,6 +94,10 @@ export async function POST(request: NextRequest) {
           checkoutEvents.status === "fulfilled"
             ? checkoutEvents.value
             : { error: String(checkoutEvents.reason) },
+        automations:
+          automations.status === "fulfilled"
+            ? automations.value
+            : { error: String(automations.reason) },
       },
       { status: 200 },
     );

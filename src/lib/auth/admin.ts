@@ -3,6 +3,7 @@ import "server-only";
 import { redirect } from "next/navigation";
 
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 
 export interface AdminSession {
   userId: string;
@@ -25,7 +26,8 @@ export async function requireAdmin(): Promise<AdminSession> {
   } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const { data: profile } = await supabase
+  const admin = createAdminClient();
+  const { data: profile } = await admin
     .from("profiles")
     .select("is_admin")
     .eq("id", user.id)
@@ -48,10 +50,12 @@ export async function getIsAdmin(): Promise<boolean> {
   } = await supabase.auth.getUser();
   if (!user) return false;
 
-  const { data } = await supabase
+  const admin = createAdminClient();
+  const { data } = await admin
     .from("profiles")
     .select("is_admin")
     .eq("id", user.id)
     .maybeSingle<{ is_admin: boolean }>();
   return Boolean(data?.is_admin);
 }
+

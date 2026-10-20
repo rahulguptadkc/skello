@@ -7,6 +7,7 @@ import {
   GaugeIcon,
   PlugZapIcon,
   SlidersHorizontalIcon,
+  SparklesIcon,
   TargetIcon,
 } from "lucide-react";
 
@@ -179,6 +180,13 @@ export default async function AdminOrganisationDetailPage({
             title="Call outcomes"
             description="Configure what each conversation outcome does (succeed / fail / callback / retry) and which count as a success."
             icon={<TargetIcon className="size-4" />}
+          />
+          <Separator />
+          <ConfigLink
+            href={`/admin/organisations/${org.id}/automations`}
+            title="Lead Automations (Hot Leads Cron)"
+            description="Schedule automated outreach jobs on hot leads with multi-agent workflows, retry limits, and global dial caps."
+            icon={<SparklesIcon className="size-4 text-emerald-500" />}
           />
         </CardContent>
       </Card>

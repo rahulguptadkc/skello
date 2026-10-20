@@ -145,9 +145,9 @@ export function CampaignUploadDialog({
   const [scheduleMode, setScheduleMode] = React.useState<ScheduleMode>("now");
   const [scheduledAt, setScheduledAt] =
     React.useState<string>(defaultScheduleAt());
-  const [maxRetries, setMaxRetries] = React.useState<number>(1);
+  const [maxRetries, setMaxRetries] = React.useState<number>(3);
   const [retryIntervalMinutes, setRetryIntervalMinutes] = React.useState<number>(30);
-  const [maxConnectedAttempts, setMaxConnectedAttempts] = React.useState<number>(1);
+  const [maxConnectedAttempts, setMaxConnectedAttempts] = React.useState<number>(2);
   const [retryOn, setRetryOn] = React.useState<CampaignRetryTrigger[]>(
     DEFAULT_RETRY_TRIGGERS,
   );
@@ -237,9 +237,9 @@ export function CampaignUploadDialog({
     setDragOver(false);
     setScheduleMode("now");
     setScheduledAt(defaultScheduleAt());
-    setMaxRetries(1);
+    setMaxRetries(3);
     setRetryIntervalMinutes(30);
-    setMaxConnectedAttempts(1);
+    setMaxConnectedAttempts(2);
     setRetryOn(DEFAULT_RETRY_TRIGGERS);
     setSwitchFloor("30");
     setSwitchWindow("60");
@@ -1182,11 +1182,14 @@ export function CampaignUploadDialog({
                           .filter((r) => r.action === "call_again")
                           .map((r) => Number(r.retries) || 0),
                       );
-                      if (maxWfRetries > 0) {
-                        setMaxRetries(maxWfRetries);
-                        setMaxConnectedAttempts(maxWfRetries + 1);
-                      }
+                      setMaxRetries(maxWfRetries > 0 ? Math.max(3, maxWfRetries) : 3);
+                    } else {
+                      setMaxRetries(3);
                     }
+                    setMaxConnectedAttempts(2);
+                  } else {
+                    setMaxRetries(3);
+                    setMaxConnectedAttempts(2);
                   }
                 }}
                 disabled={submitting || workflowsLoading}

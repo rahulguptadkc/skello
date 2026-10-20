@@ -178,36 +178,18 @@ export async function createCampaign(
       : null;
   let workflowName: string | null = parsed.data.workflow_name ?? null;
 
-  let maxWfRetries = 0;
-  if (workflowId) {
+  if (workflowId && !workflowName) {
     try {
       const { data: wf } = await admin
         .from("workflows")
-        .select("name, rules")
+        .select("name")
         .eq("id", workflowId)
-        .maybeSingle<{ name: string; rules: Array<{ action?: string; retries?: number }> }>();
-      if (wf?.name && !workflowName) workflowName = wf.name;
-      if (wf?.rules && Array.isArray(wf.rules)) {
-        maxWfRetries = Math.max(
-          0,
-          ...wf.rules
-            .filter((r) => r.action === "call_again")
-            .map((r) => Number(r.retries) || 0),
-        );
-      }
+        .maybeSingle<{ name: string }>();
+      if (wf?.name) workflowName = wf.name;
     } catch {
       // ignore
     }
   }
-
-  const effectiveMaxAttempts = Math.max(
-    parsed.data.max_attempts,
-    maxWfRetries > 0 ? maxWfRetries + 1 : 1,
-  );
-  const effectiveMaxConnectedAttempts = Math.max(
-    parsed.data.max_connected_attempts ?? 1,
-    maxWfRetries > 0 ? maxWfRetries + 1 : 1,
-  );
 
   const insertPayload = {
     organisation_id: parsed.data.organisation_id,
@@ -222,8 +204,8 @@ export async function createCampaign(
     status: isRunNow ? "in_progress" : "scheduled",
     scheduled_at: scheduledAt,
     started_at: isRunNow ? new Date().toISOString() : null,
-    max_attempts: effectiveMaxAttempts,
-    max_connected_attempts: effectiveMaxConnectedAttempts,
+    max_attempts: parsed.data.max_attempts,
+    max_connected_attempts: parsed.data.max_connected_attempts,
     retry_interval_seconds: parsed.data.retry_interval_seconds,
     retry_on: parsed.data.retry_on,
     switch_connect_rate_floor: parsed.data.switch_connect_rate_floor,
