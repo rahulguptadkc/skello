@@ -54,13 +54,9 @@ describe("layoutRequiresOffer", () => {
     expect(layoutRequiresOffer("classic")).toBe(true);
   });
 
-  it("is false for rakhi_offer — the tiers are static template copy", () => {
-    // If this flips true, the settings form starts nagging tiered orgs to pick
+  it("is false for maisha_tiered_offer — the offer is static template copy", () => {
+    // If this flips true, the settings form starts nagging static offer orgs to pick
     // a Shopify discount they deliberately don't have.
-    expect(layoutRequiresOffer("rakhi_offer")).toBe(false);
-  });
-
-  it("is false for maisha_tiered_offer — the tiers are static template copy", () => {
     expect(layoutRequiresOffer("maisha_tiered_offer")).toBe(false);
   });
 
@@ -103,7 +99,7 @@ describe("buildRecoveryTemplatePreview", () => {
   });
 
   it("numbers params 1..n in the layout's own order", () => {
-    const p = buildRecoveryTemplatePreview("rakhi_offer").params;
+    const p = buildRecoveryTemplatePreview("maisha_tiered_offer").params;
     expect(p.map((x) => x.position)).toEqual([1, 2, 3, 4]);
     expect(p.map((x) => x.key)).toEqual([
       "customer_name",
@@ -113,35 +109,17 @@ describe("buildRecoveryTemplatePreview", () => {
     ]);
   });
 
-  it("shows the whole Rakhi ladder and the checkout link", () => {
-    const { body } = buildRecoveryTemplatePreview("rakhi_offer");
-    expect(body).toContain("Buy 1 – Get 15% Off");
-    expect(body).toContain("Buy 2 – Get 25% Off");
-    expect(body).toContain("Buy 3 – Get 35% Off");
-    expect(body).toContain("₹2499");
-    expect(body).toContain("/apps/skelo/r/");
-  });
-
-  it("shows the whole Maisha ladder and the checkout link", () => {
+  it("shows the Maisha Flat 35% offer and the checkout link", () => {
     const { body } = buildRecoveryTemplatePreview("maisha_tiered_offer");
-    expect(body).toContain("Buy 1 → 10% OFF | MAISHA10");
-    expect(body).toContain("Buy 2 → 20% OFF | MAISHA20");
-    expect(body).toContain("Buy 3 → 30% OFF | MAISHA30");
+    expect(body).toContain("Flat 35% OFF sitewide is live for a limited time!");
+    expect(body).toContain("FREE shipping on orders above ₹4,000.");
     expect(body).toContain("₹2499");
     expect(body).toContain("/apps/skelo/r/");
   });
 
-  it("never puts a coupon code in the tiered message", () => {
-    // The ladder replaces the coupon. Leaking a configured code here would
+  it("never puts a coupon code in the static offer message", () => {
+    // The static offer replaces the coupon. Leaking a configured code here would
     // promise a discount the approved body doesn't grant.
-    const { body } = buildRecoveryTemplatePreview("rakhi_offer", {
-      offerType: "discount_code",
-      offerCode: "COMEBACK20",
-      discountValue: 20,
-      discountKind: "percentage",
-    });
-    expect(body).not.toContain("COMEBACK20");
-
     const { body: maishaBody } = buildRecoveryTemplatePreview(
       "maisha_tiered_offer",
       {

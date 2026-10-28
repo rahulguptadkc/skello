@@ -190,7 +190,7 @@ export function CartRecoverySettingsForm({ settings, connected }: Props) {
   );
 
   // Only warn about a missing offer when the chosen layout actually carries
-  // offer variables — rakhi_offer deliberately has none (the tiers are static
+  // offer variables — maisha_tiered_offer deliberately has none (the offer is static
   // copy in the approved body), so the warning would be noise there.
   const layoutNeedsOffer = layoutRequiresOffer(whatsappLayout);
 

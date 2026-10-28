@@ -406,18 +406,17 @@ will match what shoppers get.
 | --- | --- | --- | --- |
 | `classic` | 6 | `customer_name`, `top_product`, `cart_total`, `discounted_cart_total`, `discount_code`, `discount_link` | one coupon code, quoted with the discounted total |
 | `coupon_link` (default) | 4 | `customer_name`, `top_product`, `store_name`, `discount_link` | one coupon, pre-applied by the link — never named in the copy |
-| `rakhi_offer` | 4 | `customer_name`, `top_product`, `cart_total`, `discount_link` | **tiered ladder** — Buy 1 / 2 / 3 → 15% / 25% / 35%, static copy in the approved body |
-| `maisha_tiered_offer` | 4 | `customer_name`, `top_product`, `cart_total`, `discount_link` | **tiered ladder** — Buy 1 / 2 / 3 → 10% / 20% / 30% (MAISHA10/20/30), static copy in the approved body |
+| `maisha_tiered_offer` | 4 | `customer_name`, `top_product`, `cart_total`, `discount_link` | **sitewide offer** — Flat 35% OFF sitewide, free shipping > ₹4,000, static copy in the approved body |
 
-**`rakhi_offer` and `maisha_tiered_offer` carry no `discount_code` and no `discounted_cart_total`, and
+**`maisha_tiered_offer` carries no `discount_code` and no `discounted_cart_total`, and
 that is not an omission.** The saving depends on how many items the shopper ends
 up adding, which is unknowable at send time, so quoting one number would be a
-promise we can't keep. The tiers are baked into the Meta body instead — which
+promise we can't keep. The offer is baked into the Meta body instead — which
 costs nothing, because Meta owns the body regardless, and keeps the parameter
-count at 4. Consequently a tiered org needs **no Shopify discount configured**;
+count at 4. Consequently an offer org needs **no Shopify discount configured**;
 the settings page suppresses the "no offer set" warning for it.
 
-> ⚠️ **`coupon_link` and `rakhi_offer` both send 4 parameters but mean different
+> ⚠️ **`coupon_link` and `maisha_tiered_offer` both send 4 parameters but mean different
 > things** — `{{3}}` is the store name in one and the cart total in the other.
 > Meta validates *count* only, so switching layout without repointing
 > **WhatsApp template** at the matching approved template produces a well-formed
@@ -491,7 +490,7 @@ still quotes the cart total, just no "you save X."
 ### The short recovery link (App Proxy)
 
 **Every** layout sends this link (`discount_link` — classic as `{{6}}`,
-coupon_link and rakhi_offer as `{{4}}`). It is deliberately short and on the **store's own
+coupon_link and maisha_tiered_offer as `{{4}}`). It is deliberately short and on the **store's own
 domain** — a shopper who gets an `app.skelo.team` link in a message about *their*
 cart has every reason not to tap it:
 

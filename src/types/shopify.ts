@@ -42,10 +42,7 @@ export type ShopifyDiscountKind = "percentage" | "fixed_amount";
 export type RecoveryTemplateLayout =
   | "classic"
   | "coupon_link"
-  // Festive tiered ladder (Buy 1/2/3). Same 4-parameter count as coupon_link
-  // but a different variable MEANING — see recovery-templates.ts.
-  | "rakhi_offer"
-  // Maisha tiered ladder (Buy 1/2/3 -> MAISHA10/20/30). 4 variables (customer_name, top_product, cart_total, discount_link).
+  // Maisha offer (Flat 35% OFF). 4 variables (customer_name, top_product, cart_total, discount_link).
   | "maisha_tiered_offer";
 
 export interface ShopifyRecoverySettings {

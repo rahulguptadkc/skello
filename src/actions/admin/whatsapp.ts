@@ -133,7 +133,7 @@ export async function updateWhatsAppAdmin(
 }
 
 // Non-empty sample values for every recovery variable the template adapter may
-// read — across ALL layouts (classic, coupon_link, rakhi_offer, maisha_tiered_offer). All fields are populated
+// read — across ALL layouts (classic, coupon_link, maisha_tiered_offer). All fields are populated
 // so a test send exercises the real template (name + language + parameter count)
 // without tripping Meta's empty-param 400 — a rejection here therefore points at
 // a genuine template mismatch. Keys must stay in sync with
@@ -232,7 +232,7 @@ export async function sendTestWhatsAppAdmin(
       // Match the org's layout. Without this the adapter falls back to the
       // classic 6-param order, so a coupon_link org (the default) gets a
       // param-count 400 on a config that works fine in production. Note this
-      // test can only prove the COUNT matches — coupon_link and rakhi_offer
+      // test can only prove the COUNT matches — coupon_link and maisha_tiered_offer
       // both send 4, so a layout/template mismatch between those two passes
       // here and only shows up as wrong wording in the received message.
       variableOrder: recoveryTemplateVariableOrder(

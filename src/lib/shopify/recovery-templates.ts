@@ -88,52 +88,19 @@ export const RECOVERY_TEMPLATE_LAYOUTS: Record<
       "Tap below — your discount is already applied at checkout 👉 {{4}}",
     ].join("\n"),
   },
-  // Festive tiered layout: the offer is a VOLUME ladder, not a single coupon, so
-  // there is no `discount_code` / `discounted_cart_total` to quote — the saving
-  // depends on how many items the shopper ends up adding, which we can't know at
-  // send time. The three tiers are therefore static body copy on Meta's side,
-  // not variables: baking them into the approved template keeps the parameter
-  // count at 4 and means a tier change is a template revision (which it has to
+  // Maisha sitewide offer layout: the offer is static body copy on Meta's side,
+  // not variables: baking it into the approved template keeps the parameter
+  // count at 4 and means an offer change is a template revision (which it has to
   // be anyway — Meta owns the body).
   //
   // Same 4-parameter count as coupon_link but a DIFFERENT variable meaning
   // ({{3}} is the cart total here, the store name there). Meta only validates
   // count, so pointing this layout at a coupon_link template sends silently
   // wrong copy instead of erroring. The template NAME must match the layout.
-  rakhi_offer: {
-    label: "Rakhi offer (tiered)",
-    description:
-      "Cart reminder with the Buy 1/2/3 Rakhi discount ladder and a checkout link (4 variables). No coupon code — the tiers are fixed in the approved template body.",
-    variableOrder: [
-      "customer_name",
-      "top_product",
-      "cart_total",
-      "discount_link",
-    ],
-    // Transcribed from the body Meta approved as `skelo_cartrecovery_rakhi_edition`
-    // on 2026-08-10 — kept verbatim (trailing sign-off, plain hyphen) so the
-    // settings preview shows operators the copy shoppers actually receive.
-    previewBody: [
-      "Hi {{1}} 👋",
-      "",
-      "You left {{2}} in your cart - ₹{{3}} worth of goodies still waiting for you.",
-      "",
-      "🎁 Our special Rakhi offer is live:",
-      "Buy 1 – Get 15% Off",
-      "Buy 2 – Get 25% Off",
-      "Buy 3 – Get 35% Off",
-      "",
-      "Add one more to your cart and save even more.",
-      "",
-      "Complete your order here 👉 {{4}}",
-      "",
-      "Happy Shopping!",
-    ].join("\n"),
-  },
   maisha_tiered_offer: {
-    label: "Maisha offer (tiered)",
+    label: "Maisha offer",
     description:
-      "Cart reminder with the Buy 1/2/3 Maisha discount ladder (MAISHA10/20/30) and a checkout link (4 variables).",
+      "Cart reminder with Flat 35% OFF sitewide and a checkout link (4 variables).",
     variableOrder: [
       "customer_name",
       "top_product",
@@ -145,14 +112,9 @@ export const RECOVERY_TEMPLATE_LAYOUTS: Record<
       "",
       "You left {{2}} in your cart - ₹{{3}} worth of goodies still waiting for you.",
       "",
-      "🛍️ Up to 30% OFF is waiting for you:",
-      "Buy 1 → 10% OFF | MAISHA10",
-      "Buy 2 → 20% OFF | MAISHA20",
-      "Buy 3 → 30% OFF | MAISHA30",
+      "🎁 Good news: Flat 35% OFF sitewide is live for a limited time!",
       "",
-      "🚚 FREE shipping on orders above ₹1,000",
-      "",
-      "Stock up and save big - the perfect excuse to add one more 🎁",
+      "🚚 FREE shipping on orders above ₹4,000.",
       "",
       "Complete your order here 👉 {{4}}",
       "",
