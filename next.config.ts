@@ -8,6 +8,7 @@ import { withSentryConfig } from "@sentry/nextjs";
 const projectRoot = path.dirname(fileURLToPath(import.meta.url));
 
 const nextConfig: NextConfig = {
+  serverExternalPackages: ["@whiskeysockets/baileys", "jimp", "sharp", "pino"],
   /**
    * Version-skew protection for rolling restarts.
    *
