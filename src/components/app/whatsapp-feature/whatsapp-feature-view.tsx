@@ -74,6 +74,7 @@ import {
 } from "@/components/app/data-table";
 import {
   classifyPropertyMessage,
+  isWhatsAppLid,
   type PropertyIntent,
 } from "@/lib/whatsapp/intent-classifier";
 import {
@@ -83,7 +84,6 @@ import {
   runFallbackRuleBasedAnalysis,
 } from "@/lib/whatsapp/openai-lead-matcher";
 import { matchPropertiesByRules } from "@/lib/whatsapp/property-script-matcher";
-import { isWhatsAppLid } from "@/lib/whatsapp/llm-property-extractor";
 import { cn } from "@/lib/utils";
 import { QRCodeSvg } from "./qr-code-svg";
 

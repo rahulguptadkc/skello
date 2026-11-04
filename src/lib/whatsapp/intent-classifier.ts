@@ -6,6 +6,18 @@ import { matchBangaloreLocality } from "./bangalore-locations";
 
 export type PropertyIntent = "buy" | "rent" | "sell" | "lease" | "general";
 
+/**
+ * Checks if a phone identifier is a WhatsApp Linked Identity Device (LID) token
+ * rather than a real E.164 phone number.
+ */
+export function isWhatsAppLid(phone?: string): boolean {
+  if (!phone) return false;
+  const digits = phone.replace(/[^0-9]/g, "");
+  if (digits.length >= 13 && !(digits.startsWith("91") && digits.length === 12)) return true;
+  if (digits.length > 13) return true;
+  return false;
+}
+
 export interface ExtractedPropertyDetails {
   intent: PropertyIntent;
   confidence: number;

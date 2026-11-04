@@ -68,17 +68,7 @@ export interface RawInputMessage {
   timestamp?: number;
 }
 
-/**
- * Checks if a phone identifier is a WhatsApp internal LID (Linked Identity Device)
- * rather than a real phone number. LIDs are typically 14-16 digits and do not start with 91 followed by 10-digit mobile.
- */
-export function isWhatsAppLid(phone?: string): boolean {
-  if (!phone) return false;
-  const digits = phone.replace(/[^0-9]/g, "");
-  if (digits.length >= 13 && !(digits.startsWith("91") && digits.length === 12)) return true;
-  if (digits.length > 13) return true;
-  return false;
-}
+export { isWhatsAppLid } from "./intent-classifier";
 
 // Regex list to test if a message is potentially related to real estate properties
 export const PROPERTY_KEYWORDS = [
