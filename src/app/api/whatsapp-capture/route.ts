@@ -18,6 +18,7 @@ import {
 
 import {
   isPotentialPropertyMessage,
+  isWhatsAppLid,
   extractPropertyListingsWithLLM,
   formatListingConfigDisplay,
   formatListingPriceDisplay,
@@ -533,17 +534,25 @@ async function processLiveMessagesIntoBuffer(
           ? listing.localities.join(", ")
           : listing.project_name || "Bangalore";
 
-      const senderPhone =
-        listing.contact_numbers && listing.contact_numbers[0]
-          ? listing.contact_numbers[0].length === 10
-            ? `+91 ${listing.contact_numbers[0].slice(0, 5)} ${listing.contact_numbers[0].slice(5)}`
-            : listing.contact_numbers[0]
-          : lm.senderPhone;
+      // If the listing text has a real phone number, use it. Otherwise, if senderPhone is an internal LID, mask it as "WhatsApp Member"
+      let displayPhone = lm.senderPhone;
+      if (listing.contact_numbers && listing.contact_numbers.length > 0) {
+        const first = listing.contact_numbers[0].replace(/[^0-9]/g, "");
+        if (first.length === 10) {
+          displayPhone = `+91 ${first.slice(0, 5)} ${first.slice(5)}`;
+        } else if (first.length === 12 && first.startsWith("91")) {
+          displayPhone = `+91 ${first.slice(2, 7)} ${first.slice(7)}`;
+        } else if (!isWhatsAppLid(first)) {
+          displayPhone = listing.contact_numbers[0];
+        }
+      } else if (isWhatsAppLid(lm.senderPhone)) {
+        displayPhone = "WhatsApp Member";
+      }
 
       const record: CapturedMessageRecord = {
         id: subId,
-        sender_name: listing.contact_name || lm.senderName,
-        sender_phone: senderPhone,
+        sender_name: lm.senderName || listing.contact_name || "WhatsApp Member",
+        sender_phone: displayPhone,
         group_id: normalizedGid,
         group_name: lm.groupName,
         message_text: listing.raw_text || lm.text,

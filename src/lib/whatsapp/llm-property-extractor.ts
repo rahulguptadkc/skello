@@ -68,6 +68,18 @@ export interface RawInputMessage {
   timestamp?: number;
 }
 
+/**
+ * Checks if a phone identifier is a WhatsApp internal LID (Linked Identity Device)
+ * rather than a real phone number. LIDs are typically 14-16 digits and do not start with 91 followed by 10-digit mobile.
+ */
+export function isWhatsAppLid(phone?: string): boolean {
+  if (!phone) return false;
+  const digits = phone.replace(/[^0-9]/g, "");
+  if (digits.length >= 13 && !(digits.startsWith("91") && digits.length === 12)) return true;
+  if (digits.length > 13) return true;
+  return false;
+}
+
 // Regex list to test if a message is potentially related to real estate properties
 export const PROPERTY_KEYWORDS = [
   /\b[1-6]\s*bhk\b/i,
@@ -153,8 +165,6 @@ Each user turn looks like this:
 message_id: <id>
 sent_at: <ISO date-time, IST>
 group: <WhatsApp group name, or "Direct message">
-sender_name: <sender's WhatsApp profile name, may be empty>
-sender_number: <sender phone number>
 text:
 """
 <the raw message>
@@ -353,13 +363,8 @@ export function ruleBasedPropertyExtract(
     }
   }
 
-  const cleanSenderPhone = msg.senderPhone.replace(/[^0-9]/g, "").slice(-10);
-  const defaultNumbers =
-    extractedNumbers.length > 0
-      ? extractedNumbers
-      : cleanSenderPhone
-        ? [cleanSenderPhone]
-        : [];
+  // Only use phone numbers explicitly extracted from the message text; never treat random WhatsApp LIDs as phone numbers
+  const defaultNumbers = extractedNumbers;
 
   if (numbered.length > 1) {
     let currentIntent: BrokerDealIntent = "AS";
@@ -680,8 +685,6 @@ export async function extractPropertyListingsWithLLM(
   const userTurn = `message_id: ${msg.id}
 sent_at: ${new Date(msg.timestamp || Date.now()).toISOString()}
 group: ${msg.groupName || "Group for whatsapp testing"}
-sender_name: ${msg.senderName || ""}
-sender_number: ${msg.senderPhone || ""}
 text:
 """
 ${text}

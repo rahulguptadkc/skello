@@ -551,8 +551,6 @@ Return ONLY a valid JSON object strictly matching this schema:
   const userContent = JSON.stringify(
     inputList.map((m) => ({
       id: m.id,
-      sender: m.senderName,
-      phone: m.senderPhone,
       group: m.groupName || "WhatsApp Group",
       rawText: m.text,
     })),

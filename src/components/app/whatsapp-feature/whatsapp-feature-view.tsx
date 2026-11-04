@@ -83,6 +83,7 @@ import {
   runFallbackRuleBasedAnalysis,
 } from "@/lib/whatsapp/openai-lead-matcher";
 import { matchPropertiesByRules } from "@/lib/whatsapp/property-script-matcher";
+import { isWhatsAppLid } from "@/lib/whatsapp/llm-property-extractor";
 import { cn } from "@/lib/utils";
 import { QRCodeSvg } from "./qr-code-svg";
 
@@ -1700,7 +1701,7 @@ export function WhatsAppFeatureView({
                                 {msg.senderName}
                               </p>
                               <p className="font-mono text-[11px] text-muted-foreground truncate">
-                                {msg.senderPhone}
+                                {isWhatsAppLid(msg.senderPhone) ? "WhatsApp Member" : msg.senderPhone}
                               </p>
                             </div>
                           </div>
@@ -2189,7 +2190,7 @@ export function WhatsAppFeatureView({
                     {inspectMessage.senderName}
                   </span>
                   <span className="font-mono text-xs text-muted-foreground">
-                    {inspectMessage.senderPhone}
+                    {isWhatsAppLid(inspectMessage.senderPhone) ? "WhatsApp Member" : inspectMessage.senderPhone}
                   </span>
                 </div>
                 <p className="text-xs text-muted-foreground mt-0.5">
