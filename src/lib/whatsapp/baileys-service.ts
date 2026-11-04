@@ -375,15 +375,16 @@ export function getPermittedGroupIds(): string[] {
 
 /**
  * Resolves a WhatsApp participant (including modern privacy LIDs) to their real phone number.
- * Looks up reverse mapping files (e.g. lid-mapping-<lid>_reverse.json) in the auth directory,
- * or extracts phone numbers from the message text if available.
+ * Looks up reverse mapping files (e.g. lid-mapping-<lid>_reverse.json) in the auth directory.
+ * Message text is deliberately ignored because listing contact numbers are not sender identities.
  */
 export function resolvePhoneNumberFromParticipant(
   rawParticipant: string,
-  messageText?: string,
+  _messageText?: string,
 ): string {
-  if (!rawParticipant) return "+91 98450 11990";
+  if (!rawParticipant) return "WhatsApp Member";
   const rawNumber = String(rawParticipant).split("@")[0].split(":")[0].replace(/[^0-9]/g, "");
+  if (!rawNumber) return "WhatsApp Member";
   let resolvedNumber = rawNumber;
 
   // If modern WhatsApp LID (typically >= 13 digits), check for reverse lid mapping in auth directory
@@ -392,25 +393,21 @@ export function resolvePhoneNumberFromParticipant(
     if (fs.existsSync(reversePath)) {
       try {
         const mapped = JSON.parse(fs.readFileSync(reversePath, "utf8"));
-        if (typeof mapped === "string" && mapped.length >= 10) {
-          resolvedNumber = mapped.replace(/[^0-9]/g, "");
+        if (typeof mapped === "string") {
+          const mappedDigits = mapped.replace(/[^0-9]/g, "");
+          if (mappedDigits.length >= 10 && mappedDigits.length <= 15) {
+            resolvedNumber = mappedDigits;
+          }
         }
       } catch {}
     }
   }
 
-  // If still unresolved or starting with 1 (LID), check if message text contains a contact phone number
-  if ((resolvedNumber.length >= 13 || resolvedNumber.length < 10) && messageText) {
-    const phoneMatch = messageText.match(
-      /(?:call|contact|ph|wa|mobile|cell)?\s*[:\-]?\s*(\+?91[\s\-]?)?([6-9]\d{4}[\s\-]?\d{5})\b/i,
-    );
-    if (phoneMatch) {
-      const cleanDigits = phoneMatch[0].replace(/[^0-9]/g, "");
-      const tenDigits = cleanDigits.slice(-10);
-      if (tenDigits.length === 10) {
-        return `+91 ${tenDigits.slice(0, 5)} ${tenDigits.slice(5)}`;
-      }
-    }
+  // Never infer the sender from a phone number inside the message. Listing
+  // contact numbers often belong to a different person than the group sender.
+  // An unresolved LID is safer to show as unknown than as a guessed phone.
+  if (resolvedNumber.length >= 13 || resolvedNumber.length < 10) {
+    return "WhatsApp Member";
   }
 
   // Format clean Indian or international number

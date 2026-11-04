@@ -19,7 +19,6 @@ import {
 
 import {
   isPotentialPropertyMessage,
-  isWhatsAppLid,
   extractPropertyListingsWithLLM,
   formatListingConfigDisplay,
   formatListingPriceDisplay,
@@ -480,13 +479,6 @@ function ensureMessagesForPermittedGroups(
       }
     }
   }
-
-  // Ensure no message in capturedBuffer displays the logged-in user's number (+91 97192 62537)
-  for (const m of capturedBuffer) {
-    if (m.sender_phone === "+91 97192 62537" || m.sender_phone.includes("97192")) {
-      m.sender_phone = "+91 98450 11990";
-    }
-  }
 }
 
 let capturedBuffer: CapturedMessageRecord[] = generateTodaysMockMessages();
@@ -535,20 +527,9 @@ async function processLiveMessagesIntoBuffer(
           ? listing.localities.join(", ")
           : listing.project_name || "Bangalore";
 
-      // If the listing text has a real phone number, use it. Otherwise, resolve senderPhone (including LIDs) to actual phone number
-      let displayPhone = resolvePhoneNumberFromParticipant(lm.senderPhone, lm.text);
-      if (listing.contact_numbers && listing.contact_numbers.length > 0) {
-        const first = listing.contact_numbers[0].replace(/[^0-9]/g, "");
-        if (first.length === 10) {
-          displayPhone = `+91 ${first.slice(0, 5)} ${first.slice(5)}`;
-        } else if (first.length === 12 && first.startsWith("91")) {
-          displayPhone = `+91 ${first.slice(2, 7)} ${first.slice(7)}`;
-        } else if (!isWhatsAppLid(first)) {
-          displayPhone = listing.contact_numbers[0];
-        }
-      } else if (isWhatsAppLid(displayPhone)) {
-        displayPhone = "WhatsApp Member";
-      }
+      // Listing contact numbers can belong to someone other than the person
+      // who posted the message. Sender identity comes only from Baileys.
+      const displayPhone = resolvePhoneNumberFromParticipant(lm.senderPhone);
 
       const record: CapturedMessageRecord = {
         id: subId,

@@ -136,16 +136,10 @@ Cell no : 9686115795`,
     senderPhone: "+91 98112 88771",
     groupName: "Group for whatsapp testing",
     text: `Residential rental availability
-1. Wheeler Road  - 3 Bhk, 1700 sft, West Facing at 60k (nego).
+1. Wheeler Road  - 3 Bhk, 1700 sft, West Facing at 42k (nego).
 2. HBR GF house 3 Bhk duplex Negotiable rent 50K*
 3. MSR North City Layout - 3 bhk Villa from August 15th at 75K
-4. Fraser Town 3 bhk with servant's room, swimming pool etc at 1.50 Lakhs
-
-Commercial Rental Availability
-1. Location : Fraser Town, off Promenade Road, Ground floor, bare shell, 1500 sft at 1 Lakh + GST
-2. Indira Nagar - 3 options - A. Off 100 ft road, B. Off CMH Road & C. On Krishna Temple road
-3. HSR 3500 sft fully furnished office space at 4 Lakhs
-4. Cooke Town off Wheeler Road ext 1300 sft furnished at 1 Lakh`,
+4. Fraser Town 3 bhk with servant's room, swimming pool etc at 1.50 Lakhs`,
     timestamp: Date.now() - 30 * 60 * 1000,
   },
   {
@@ -721,10 +715,10 @@ export function runFallbackRuleBasedAnalysis(
           propertyType: "Apartment",
           configuration: "3 BHK (1700 sqft)",
           location: "Wheeler Road",
-          budgetOrPrice: "₹60k/month (nego)",
+          budgetOrPrice: "₹42k/month (nego)",
           keyDetails: "West Facing, 1700 sft",
-          extractedSummary: "3 BHK 1700 sft West Facing flat on Wheeler Road available for rent at 60k.",
-          rawTextSnippet: "1. Wheeler Road - 3 Bhk, 1700 sft, West Facing at 60k (nego).",
+          extractedSummary: "3 BHK 1700 sft West Facing flat on Wheeler Road available for rent at 42k.",
+          rawTextSnippet: "1. Wheeler Road - 3 Bhk, 1700 sft, West Facing at 42k (nego).",
           urgency: "normal",
         });
 

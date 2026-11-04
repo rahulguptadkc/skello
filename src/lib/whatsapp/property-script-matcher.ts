@@ -251,17 +251,33 @@ export function evaluateConfigCompatibility(configDemand?: string, configSupply?
 
 /**
  * Evaluates Bangalore locality matching (same locality, neighboring locality, same zone).
+ * Generic "Bangalore" alone does not count as a locality match.
  */
 export function evaluateLocationCompatibility(locDemand?: string, locSupply?: string): {
   score: number;
   reason: string;
 } {
+  const genericCities = new Set([
+    "bangalore",
+    "bengaluru",
+    "karnataka",
+    "india",
+    "",
+  ]);
+
+  const rawD = (locDemand || "").trim().toLowerCase();
+  const rawS = (locSupply || "").trim().toLowerCase();
+
+  // If either locality is empty or just generic "Bangalore", it does NOT match!
+  if (genericCities.has(rawD) || genericCities.has(rawS)) {
+    return {
+      score: 0.2,
+      reason: "Specific locality not specified (only generic Bangalore)",
+    };
+  }
+
   const ld = matchBangaloreLocality(locDemand || "") || locDemand || "";
   const ls = matchBangaloreLocality(locSupply || "") || locSupply || "";
-
-  if (!ld || !ls) {
-    return { score: 0.6, reason: "Bangalore metropolitan area match" };
-  }
 
   const ldNorm = ld.trim().toLowerCase();
   const lsNorm = ls.trim().toLowerCase();
@@ -286,11 +302,12 @@ export function evaluateLocationCompatibility(locDemand?: string, locSupply?: st
     return { score: 0.72, reason: `Same Bangalore zone: Both in ${zoneDemand} Bangalore (${ld} & ${ls})` };
   }
 
-  return { score: 0.45, reason: `Different corridors in Bangalore: ${ld} vs ${ls}` };
+  return { score: 0.2, reason: `Different corridors in Bangalore: ${ld} vs ${ls}` };
 }
 
 /**
  * Evaluates budget and price feasibility.
+ * Requires both prices to be specified, with asking price <= 1.10x demand budget.
  */
 export function evaluateBudgetCompatibility(
   priceDemand?: string,
@@ -303,9 +320,17 @@ export function evaluateBudgetCompatibility(
   const pDem = parsePriceToInr(priceDemand);
   const pSup = parsePriceToInr(priceSupply);
 
-  // If either price is unspecified, assign neutral feasibility
-  if (pDem.type === "unspecified" || pSup.type === "unspecified" || pDem.amountInr === 0 || pSup.amountInr === 0) {
-    return { score: 0.75, reason: "Price subject to mutual negotiation (direct owner/broker rate)" };
+  // If either price is unspecified or missing, the budget column does NOT match
+  if (
+    pDem.type === "unspecified" ||
+    pSup.type === "unspecified" ||
+    pDem.amountInr <= 0 ||
+    pSup.amountInr <= 0
+  ) {
+    return {
+      score: 0.2,
+      reason: "Budget or asking price not specified",
+    };
   }
 
   // Compare amounts
@@ -320,25 +345,20 @@ export function evaluateBudgetCompatibility(
     };
   }
 
-  // Supply asking is within 10-25% negotiable buffer
+  // Supply asking is within 10% negotiable buffer
   const ratio = asking / budget;
-  if (ratio <= 1.25) {
+  if (ratio <= 1.10) {
+    const pctOver = Math.round((ratio - 1) * 100);
     return {
       score: 0.85,
-      reason: `Asking rate (${pSup.raw}) is slightly above budget (${pDem.raw}) but within standard negotiable margin`,
+      reason: `Asking rate (${pSup.raw}) is ${pctOver}% above budget (${pDem.raw}), within 10% negotiable buffer`,
     };
   }
 
-  if (ratio <= 1.5) {
-    return {
-      score: 0.6,
-      reason: `Asking rate (${pSup.raw}) exceeds budget (${pDem.raw}) but can be negotiated for serious closer`,
-    };
-  }
-
+  const pctOver = Math.round((ratio - 1) * 100);
   return {
-    score: 0.3,
-    reason: `Significant budget gap (${pDem.raw} budget vs ${pSup.raw} asking)`,
+    score: 0.2,
+    reason: `Asking rate (${pSup.raw}) exceeds budget (${pDem.raw}) by ${pctOver}%, more than 10% tolerance`,
   };
 }
 
@@ -498,11 +518,27 @@ export function matchPropertiesByRules(leads: ExtractedAILead[]): AILeadMatch[] 
       // 5. Budget / Price check
       const budgetEval = evaluateBudgetCompatibility(demand.budgetOrPrice, supply.budgetOrPrice, demand.side);
 
+      // ALL 3 COLUMNS MUST MATCH:
+      // Column 1: REQ. CONFIG & Property Type must match
+      if (typeEval.score < 0.6 || configEval.score < 0.6) {
+        continue;
+      }
+
+      // Column 2: BUDGET must match (supply asking <= 1.10x demand budget)
+      if (budgetEval.score < 0.8) {
+        continue;
+      }
+
+      // Column 3: DEMAND LOCALITY must match (specific corridor/cluster, not generic city)
+      if (locEval.score < 0.7) {
+        continue;
+      }
+
       // Calculate composite score (Weights: Intent=0.20, Type=0.25, Location=0.25, Config=0.15, Budget=0.15)
       const compositeScore = Math.min(
         0.98,
         Math.max(
-          0.5,
+          0.7,
           1.0 * 0.2 +
             typeEval.score * 0.25 +
             locEval.score * 0.25 +
@@ -511,8 +547,8 @@ export function matchPropertiesByRules(leads: ExtractedAILead[]): AILeadMatch[] 
         ),
       );
 
-      // Only qualify matches with score >= 0.65
-      if (compositeScore >= 0.65) {
+      // Only qualify matches with score >= 0.75
+      if (compositeScore >= 0.75) {
         const matchReasons = [
           typeEval.reason,
           locEval.reason,

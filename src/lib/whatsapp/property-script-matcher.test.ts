@@ -98,8 +98,8 @@ describe("property-script-matcher (Algorithmic Matchmaking)", () => {
       const within = evaluateBudgetCompatibility("₹50K/month", "45k");
       expect(within.score).toBe(1.0);
 
-      // Negotiable margin (40k budget vs 50k asking)
-      const nego = evaluateBudgetCompatibility("40K", "50K");
+      // Negotiable margin within 10% (40k budget vs 44k asking)
+      const nego = evaluateBudgetCompatibility("40K", "44K");
       expect(nego.score).toBe(0.85);
 
       // Large divergence
@@ -142,9 +142,9 @@ describe("property-script-matcher (Algorithmic Matchmaking)", () => {
         propertyType: "Apartment",
         configuration: "3 BHK",
         location: "Wheeler Road",
-        budgetOrPrice: "60k (nego)",
-        extractedSummary: "Wheeler Road 3 BHK 1700 sft for rent at 60k negotiable",
-        rawTextSnippet: "Wheeler Road - 3 Bhk, 1700 sft, West Facing at 60k (nego).",
+        budgetOrPrice: "42k (nego)",
+        extractedSummary: "Wheeler Road 3 BHK 1700 sft for rent at 42k negotiable",
+        rawTextSnippet: "Wheeler Road - 3 Bhk, 1700 sft, West Facing at 42k (nego).",
       },
       // Demand 2: Buyer in Whitefield
       {
@@ -210,7 +210,7 @@ describe("property-script-matcher (Algorithmic Matchmaking)", () => {
       );
       expect(cookeMatch).toBeDefined();
       expect(cookeMatch?.demandBudget).toBe("40K");
-      expect(cookeMatch?.supplyPrice).toBe("60k (nego)");
+      expect(cookeMatch?.supplyPrice).toBe("42k (nego)");
       expect(cookeMatch?.matchScore).toBeGreaterThanOrEqual(0.75);
       expect(cookeMatch?.matchReason).toContain("Wheeler Road");
       expect(cookeMatch?.suggestedPitch).toContain("Wheeler Road");
