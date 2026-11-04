@@ -480,9 +480,31 @@ class LeadMatcher:
             if not re.search(r"\b(development|develop|apartment|apartments|builder|construction)\b", d_purpose):
                 return False, f"Supply is {s_deal} but demand purpose does not mention development or apartments"
 
-        # 4. Same broker check: Skip if both belong to same broker identity
+        # 4. Same broker / sender check: Both potential leads must be completely DIFFERENT!
+        # 4a. Same base message ID (e.g. multi-item decomposed from the exact same WhatsApp message)
+        d_base_id = demand.message_id.split("-item-")[0].split("-list-")[0]
+        s_base_id = supply.message_id.split("-item-")[0].split("-list-")[0]
+        if d_base_id and s_base_id and d_base_id == s_base_id:
+            return False, f"Same source WhatsApp message ({d_base_id})"
+
+        # 4b. Same broker identity from Union-Find graph
         if demand.broker_id and supply.broker_id and demand.broker_id == supply.broker_id:
             return False, f"Same broker identity ({demand.broker_id})"
+
+        # 4c. Same contact phone numbers
+        d_phones = {clean_phone_number(demand.sender_number)} | {clean_phone_number(p) for p in demand.contact_numbers}
+        s_phones = {clean_phone_number(supply.sender_number)} | {clean_phone_number(p) for p in supply.contact_numbers}
+        d_phones = {p for p in d_phones if len(p) >= 10}
+        s_phones = {p for p in s_phones if len(p) >= 10}
+        if bool(d_phones & s_phones):
+            return False, "Same contact phone number across leads"
+
+        # 4d. Same contact / sender name
+        generic_names = {"whatsapp member", "whatsapp user", "unknown", "direct contact", ""}
+        d_names = {n.strip().lower() for n in (demand.sender_name, demand.contact_name) if n} - generic_names
+        s_names = {n.strip().lower() for n in (supply.sender_name, supply.contact_name) if n} - generic_names
+        if bool(d_names & s_names):
+            return False, "Same contact person across leads"
 
         # 5. City check: Same city. Demand localities ['Any'] passes locality check but not city check.
         if (demand.city or "").lower().strip() != (supply.city or "").lower().strip():

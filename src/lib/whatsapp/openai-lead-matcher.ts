@@ -132,7 +132,7 @@ Cell no : 9686115795`,
   },
   {
     id: "sample-kartik-2",
-    senderName: "Kartik Skelo",
+    senderName: "Central Bangalore Rentals",
     senderPhone: "+91 98112 88771",
     groupName: "Group for whatsapp testing",
     text: `Residential rental availability
@@ -141,15 +141,21 @@ Cell no : 9686115795`,
 3. MSR North City Layout - 3 bhk Villa from August 15th at 75K
 4. Fraser Town 3 bhk with servant's room, swimming pool etc at 1.50 Lakhs
 
-Residential Rental Requirement
-1. Location : Cooke Town close to SBI Bank, 2 BHK, Semi Furnished. Budget 40K
-
 Commercial Rental Availability
 1. Location : Fraser Town, off Promenade Road, Ground floor, bare shell, 1500 sft at 1 Lakh + GST
 2. Indira Nagar - 3 options - A. Off 100 ft road, B. Off CMH Road & C. On Krishna Temple road
 3. HSR 3500 sft fully furnished office space at 4 Lakhs
 4. Cooke Town off Wheeler Road ext 1300 sft furnished at 1 Lakh`,
     timestamp: Date.now() - 30 * 60 * 1000,
+  },
+  {
+    id: "sample-tenant-cooke",
+    senderName: "Farhan Tenant Rep",
+    senderPhone: "+91 98450 99887",
+    groupName: "Group for whatsapp testing",
+    text: `Residential Rental Requirement
+1. Location : Cooke Town close to SBI Bank, 2 BHK, Semi Furnished. Budget 40K`,
+    timestamp: Date.now() - 28 * 60 * 1000,
   },
   {
     id: "sample-kartik-3",
@@ -699,93 +705,97 @@ export function runFallbackRuleBasedAnalysis(
 
     // Multi-section decomposition
     if (lower.includes("residential rental availability") || lower.includes("residential rental requirement")) {
-      // 1. Wheeler Road
-      leads.push({
-        id: `fb-${msg.id}-1`,
-        sourceMessageId: msg.id,
-        senderName: msg.senderName,
-        senderPhone: msg.senderPhone,
-        contactPerson: extractedName,
-        contactPhone: extractedPhone,
-        groupName: msg.groupName,
-        intent: "rent_out",
-        intentLabel: "Rental Available (Landlord)",
-        side: "supply",
-        propertyType: "Apartment",
-        configuration: "3 BHK (1700 sqft)",
-        location: "Wheeler Road",
-        budgetOrPrice: "₹60k/month (nego)",
-        keyDetails: "West Facing, 1700 sft",
-        extractedSummary: "3 BHK 1700 sft West Facing flat on Wheeler Road available for rent at 60k.",
-        rawTextSnippet: "1. Wheeler Road - 3 Bhk, 1700 sft, West Facing at 60k (nego).",
-        urgency: "normal",
-      });
+      if (lower.includes("residential rental availability")) {
+        // 1. Wheeler Road
+        leads.push({
+          id: `fb-${msg.id}-1`,
+          sourceMessageId: msg.id,
+          senderName: msg.senderName,
+          senderPhone: msg.senderPhone,
+          contactPerson: extractedName,
+          contactPhone: extractedPhone,
+          groupName: msg.groupName,
+          intent: "rent_out",
+          intentLabel: "Rental Available (Landlord)",
+          side: "supply",
+          propertyType: "Apartment",
+          configuration: "3 BHK (1700 sqft)",
+          location: "Wheeler Road",
+          budgetOrPrice: "₹60k/month (nego)",
+          keyDetails: "West Facing, 1700 sft",
+          extractedSummary: "3 BHK 1700 sft West Facing flat on Wheeler Road available for rent at 60k.",
+          rawTextSnippet: "1. Wheeler Road - 3 Bhk, 1700 sft, West Facing at 60k (nego).",
+          urgency: "normal",
+        });
 
-      // 2. HBR GF house
-      leads.push({
-        id: `fb-${msg.id}-2`,
-        sourceMessageId: msg.id,
-        senderName: msg.senderName,
-        senderPhone: msg.senderPhone,
-        contactPerson: extractedName,
-        contactPhone: extractedPhone,
-        groupName: msg.groupName,
-        intent: "rent_out",
-        intentLabel: "Rental Available (Landlord)",
-        side: "supply",
-        propertyType: "Duplex House",
-        configuration: "3 BHK Duplex",
-        location: "HBR Layout",
-        budgetOrPrice: "₹50K/month (nego)",
-        keyDetails: "Ground floor duplex house",
-        extractedSummary: "HBR Ground Floor 3 BHK duplex house for rent at 50k negotiable.",
-        rawTextSnippet: "2. HBR GF house 3 Bhk duplex Negotiable rent 50K*",
-        urgency: "normal",
-      });
+        // 2. HBR GF house
+        leads.push({
+          id: `fb-${msg.id}-2`,
+          sourceMessageId: msg.id,
+          senderName: msg.senderName,
+          senderPhone: msg.senderPhone,
+          contactPerson: extractedName,
+          contactPhone: extractedPhone,
+          groupName: msg.groupName,
+          intent: "rent_out",
+          intentLabel: "Rental Available (Landlord)",
+          side: "supply",
+          propertyType: "Duplex House",
+          configuration: "3 BHK Duplex",
+          location: "HBR Layout",
+          budgetOrPrice: "₹50K/month (nego)",
+          keyDetails: "Ground floor duplex house",
+          extractedSummary: "HBR Ground Floor 3 BHK duplex house for rent at 50k negotiable.",
+          rawTextSnippet: "2. HBR GF house 3 Bhk duplex Negotiable rent 50K*",
+          urgency: "normal",
+        });
 
-      // 3. Cooke Town Requirement (Demand)
-      leads.push({
-        id: `fb-${msg.id}-3`,
-        sourceMessageId: msg.id,
-        senderName: msg.senderName,
-        senderPhone: msg.senderPhone,
-        contactPerson: extractedName,
-        contactPhone: extractedPhone,
-        groupName: msg.groupName,
-        intent: "rent_seek",
-        intentLabel: "Looking to Rent (Tenant)",
-        side: "demand",
-        propertyType: "Apartment",
-        configuration: "2 BHK",
-        location: "Cooke Town",
-        budgetOrPrice: "₹40K/month",
-        keyDetails: "Semi Furnished, close to SBI Bank",
-        extractedSummary: "Client looking for 2 BHK semi-furnished in Cooke Town near SBI Bank. Budget 40k.",
-        rawTextSnippet: "Location : Cooke Town close to SBI Bank, 2 BHK, Semi Furnished. Budget 40K",
-        urgency: "high",
-      });
+        // 4. Fraser Town Commercial
+        leads.push({
+          id: `fb-${msg.id}-4`,
+          sourceMessageId: msg.id,
+          senderName: msg.senderName,
+          senderPhone: msg.senderPhone,
+          contactPerson: extractedName,
+          contactPhone: extractedPhone,
+          groupName: msg.groupName,
+          intent: "lease_out",
+          intentLabel: "Commercial Space on Lease",
+          side: "supply",
+          propertyType: "Commercial Office / Retail",
+          configuration: "1500 sqft Bare Shell",
+          location: "Fraser Town",
+          budgetOrPrice: "₹1 Lakh/month + GST",
+          keyDetails: "Off Promenade Road, Ground floor",
+          extractedSummary: "1500 sqft bare shell ground floor commercial space off Promenade Rd, Fraser Town.",
+          rawTextSnippet: "Fraser Town, off Promenade Road, Ground floor, bare shell, 1500 sft at 1 Lakh + GST",
+          urgency: "normal",
+        });
+      }
 
-      // 4. Fraser Town Commercial
-      leads.push({
-        id: `fb-${msg.id}-4`,
-        sourceMessageId: msg.id,
-        senderName: msg.senderName,
-        senderPhone: msg.senderPhone,
-        contactPerson: extractedName,
-        contactPhone: extractedPhone,
-        groupName: msg.groupName,
-        intent: "lease_out",
-        intentLabel: "Commercial Space on Lease",
-        side: "supply",
-        propertyType: "Commercial Office / Retail",
-        configuration: "1500 sqft Bare Shell",
-        location: "Fraser Town",
-        budgetOrPrice: "₹1 Lakh/month + GST",
-        keyDetails: "Off Promenade Road, Ground floor",
-        extractedSummary: "1500 sqft bare shell ground floor commercial space off Promenade Rd, Fraser Town.",
-        rawTextSnippet: "Fraser Town, off Promenade Road, Ground floor, bare shell, 1500 sft at 1 Lakh + GST",
-        urgency: "normal",
-      });
+      if (lower.includes("residential rental requirement")) {
+        // 3. Cooke Town Requirement (Demand)
+        leads.push({
+          id: `fb-${msg.id}-3`,
+          sourceMessageId: msg.id,
+          senderName: msg.senderName,
+          senderPhone: msg.senderPhone,
+          contactPerson: extractedName,
+          contactPhone: extractedPhone,
+          groupName: msg.groupName,
+          intent: "rent_seek",
+          intentLabel: "Looking to Rent (Tenant)",
+          side: "demand",
+          propertyType: "Apartment",
+          configuration: "2 BHK",
+          location: "Cooke Town",
+          budgetOrPrice: "₹40K/month",
+          keyDetails: "Semi Furnished, close to SBI Bank",
+          extractedSummary: "Client looking for 2 BHK semi-furnished in Cooke Town near SBI Bank. Budget 40k.",
+          rawTextSnippet: "Location : Cooke Town close to SBI Bank, 2 BHK, Semi Furnished. Budget 40K",
+          urgency: "high",
+        });
+      }
 
       continue;
     }

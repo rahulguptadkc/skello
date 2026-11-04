@@ -371,6 +371,87 @@ export function generateSuggestedPitch(
 }
 
 /**
+ * Checks whether two leads originate from the same message, same contact phone,
+ * or same broker / person. A lead must NEVER match against itself or the same sender.
+ */
+export function areLeadsFromSameSourceOrPerson(
+  demand: ExtractedAILead,
+  supply: ExtractedAILead,
+): boolean {
+  // 1. Same Lead ID
+  if (demand.id === supply.id) return true;
+
+  // 2. Same source WhatsApp message ID
+  if (
+    demand.sourceMessageId &&
+    supply.sourceMessageId &&
+    demand.sourceMessageId === supply.sourceMessageId
+  ) {
+    return true;
+  }
+
+  // 3. Multi-listing decomposed from the same parent message (e.g. "msg-1-list-1" and "msg-1-list-2")
+  const baseDemandId = demand.id.split("-list-")[0].split("-item-")[0];
+  const baseSupplyId = supply.id.split("-list-")[0].split("-item-")[0];
+  if (baseDemandId && baseSupplyId && baseDemandId === baseSupplyId) {
+    return true;
+  }
+
+  // 4. Same sender or contact phone number
+  const cleanDigits = (p?: string): string => {
+    if (!p) return "";
+    const d = p.replace(/[^0-9]/g, "");
+    if (d.length === 12 && d.startsWith("91")) return d.slice(2);
+    if (d.length === 11 && d.startsWith("0")) return d.slice(1);
+    return d;
+  };
+
+  const dPhones = [
+    cleanDigits(demand.senderPhone),
+    cleanDigits(demand.contactPhone),
+  ].filter((p) => p.length >= 10);
+  const sPhones = [
+    cleanDigits(supply.senderPhone),
+    cleanDigits(supply.contactPhone),
+  ].filter((p) => p.length >= 10);
+
+  for (const dp of dPhones) {
+    for (const sp of sPhones) {
+      if (dp === sp || dp.endsWith(sp) || sp.endsWith(dp)) {
+        return true;
+      }
+    }
+  }
+
+  // 5. Same sender or contact name (excluding generic placeholders)
+  const genericNames = new Set([
+    "whatsapp member",
+    "whatsapp user",
+    "unknown",
+    "direct contact",
+    "",
+  ]);
+  const dNames = [demand.senderName, demand.contactPerson]
+    .filter(Boolean)
+    .map((n) => n!.trim().toLowerCase())
+    .filter((n) => !genericNames.has(n));
+  const sNames = [supply.senderName, supply.contactPerson]
+    .filter(Boolean)
+    .map((n) => n!.trim().toLowerCase())
+    .filter((n) => !genericNames.has(n));
+
+  for (const dn of dNames) {
+    for (const sn of sNames) {
+      if (dn === sn) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+/**
  * Script-Based Property Matchmaker.
  * Evaluates all Demand leads against Supply leads and returns ranked matches.
  */
@@ -387,6 +468,11 @@ export function matchPropertiesByRules(leads: ExtractedAILead[]): AILeadMatch[] 
 
   for (const demand of demandLeads) {
     for (const supply of supplyLeads) {
+      // 0. Ensure both potential leads are completely DIFFERENT entities / brokers / messages
+      if (areLeadsFromSameSourceOrPerson(demand, supply)) {
+        continue;
+      }
+
       // 1. Intent check
       if (!isIntentCompatible(demand.intent, supply.intent)) {
         continue;

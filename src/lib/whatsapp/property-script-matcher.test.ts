@@ -132,10 +132,10 @@ describe("property-script-matcher (Algorithmic Matchmaking)", () => {
       {
         id: "lead-wheeler-flat",
         sourceMessageId: "msg-2",
-        senderName: "Kartik Skelo",
-        senderPhone: "+91 98450 11990",
-        contactPerson: "Kartik Skelo",
-        contactPhone: "+91 98450 11990",
+        senderName: "Wheeler Landlord",
+        senderPhone: "+91 99887 76655",
+        contactPerson: "Wheeler Landlord",
+        contactPhone: "+91 99887 76655",
         intent: "rent_out",
         intentLabel: "Rental Available",
         side: "supply",
@@ -231,6 +231,44 @@ describe("property-script-matcher (Algorithmic Matchmaking)", () => {
         (m) => m.supplyLeadId === "lead-indiranagar-comm" && m.demandLeadId === "lead-cooke-tenant",
       );
       expect(invalidMatch).toBeUndefined();
+    });
+
+    it("blocks matching when demand and supply are from the same person or message", () => {
+      const sameSenderLeads: ExtractedAILead[] = [
+        {
+          id: "kartik-demand",
+          sourceMessageId: "msg-kartik-1",
+          senderName: "Kartik",
+          senderPhone: "+91 95912 92090",
+          intent: "buy",
+          intentLabel: "Looking to Buy",
+          side: "demand",
+          propertyType: "Plot",
+          configuration: "3000 sqft",
+          location: "Bangalore",
+          budgetOrPrice: "Rs. 15cr",
+          extractedSummary: "Looking for 3000 sqft plot in Bangalore",
+          rawTextSnippet: "Urgently require 3000 sqft plot in Bangalore. Budget 15cr",
+        },
+        {
+          id: "kartik-supply",
+          sourceMessageId: "msg-kartik-1",
+          senderName: "Kartik",
+          senderPhone: "+91 95912 92090",
+          intent: "sell",
+          intentLabel: "Property for Sale",
+          side: "supply",
+          propertyType: "Plot",
+          configuration: "3000 sqft",
+          location: "Bangalore",
+          budgetOrPrice: "Rs 10cr",
+          extractedSummary: "3000 sqft plot available for sale in Bangalore",
+          rawTextSnippet: "Plot available for sale in Bangalore at 10cr",
+        },
+      ];
+
+      const matches = matchPropertiesByRules(sameSenderLeads);
+      expect(matches.length).toBe(0);
     });
   });
 });
