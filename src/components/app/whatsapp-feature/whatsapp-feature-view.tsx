@@ -2182,7 +2182,10 @@ export function WhatsAppFeatureView({
   {/* FULL MESSAGE INSPECT MODAL */}
       {inspectMessage && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in duration-200">
-          <div className="relative w-full max-w-lg max-h-[50vh] flex flex-col rounded-2xl bg-card p-5 shadow-2xl border border-border overflow-hidden">
+          <div
+            style={{ maxHeight: "50vh", height: "50vh" }}
+            className="relative w-full max-w-lg h-[50vh] max-h-[50vh] flex flex-col rounded-2xl bg-card p-5 shadow-2xl border border-border overflow-hidden"
+          >
             <div className="flex items-start justify-between border-b border-border/70 pb-3 shrink-0">
               <div>
                 <div className="flex items-center gap-2">
@@ -2247,7 +2250,7 @@ export function WhatsAppFeatureView({
               </div>
             </div>
 
-            <div className="flex-1 min-h-0 flex flex-col space-y-1 mt-3">
+            <div className="flex-1 min-h-0 flex flex-col space-y-1 mt-2.5 overflow-hidden">
               <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide shrink-0">
                 Raw WhatsApp Message Text:
               </label>

@@ -441,9 +441,15 @@ export function getLiveCapturedMessages(): LiveCapturedGroupMessage[] {
     };
   });
 
+  const diskMap = new Map(resolved.map((m) => [m.id, m]));
   if (!globalThis.__skeloLiveMessages || globalThis.__skeloLiveMessages.length === 0) {
     globalThis.__skeloLiveMessages = resolved;
-  } else if (resolved.length > 0) {
+  } else {
+    // Update existing in-memory items with resolved phones, and append new ones
+    globalThis.__skeloLiveMessages = globalThis.__skeloLiveMessages.map((m) => {
+      const updated = diskMap.get(m.id);
+      return updated ? { ...m, senderPhone: updated.senderPhone } : m;
+    });
     const memIds = new Set(globalThis.__skeloLiveMessages.map((m) => m.id));
     for (const dm of resolved) {
       if (!memIds.has(dm.id)) {

@@ -13,6 +13,7 @@ import {
   startWhatsAppService,
   getWhatsAppServiceState,
   extractContactFromMessage,
+  resolvePhoneNumberFromParticipant,
   type DiscoveredWhatsAppGroup,
 } from "@/lib/whatsapp/baileys-service";
 
@@ -534,8 +535,8 @@ async function processLiveMessagesIntoBuffer(
           ? listing.localities.join(", ")
           : listing.project_name || "Bangalore";
 
-      // If the listing text has a real phone number, use it. Otherwise, if senderPhone is an internal LID, mask it as "WhatsApp Member"
-      let displayPhone = lm.senderPhone;
+      // If the listing text has a real phone number, use it. Otherwise, resolve senderPhone (including LIDs) to actual phone number
+      let displayPhone = resolvePhoneNumberFromParticipant(lm.senderPhone, lm.text);
       if (listing.contact_numbers && listing.contact_numbers.length > 0) {
         const first = listing.contact_numbers[0].replace(/[^0-9]/g, "");
         if (first.length === 10) {
@@ -545,7 +546,7 @@ async function processLiveMessagesIntoBuffer(
         } else if (!isWhatsAppLid(first)) {
           displayPhone = listing.contact_numbers[0];
         }
-      } else if (isWhatsAppLid(lm.senderPhone)) {
+      } else if (isWhatsAppLid(displayPhone)) {
         displayPhone = "WhatsApp Member";
       }
 
