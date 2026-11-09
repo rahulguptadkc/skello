@@ -5,7 +5,6 @@ import {
   GitForkIcon,
   LayoutGridIcon,
   MessageCircleIcon,
-  MessageSquareIcon,
   PackageCheckIcon,
   PlugZapIcon,
   RadioIcon,
@@ -72,19 +71,6 @@ const LEADS_SECTION: NavSection = {
       label: "Conversations",
       icon: MessageCircleIcon,
       keywords: ["calls", "transcripts", "history"],
-    },
-    {
-      href: "/whatsapp-feature",
-      label: "WhatsApp Feature",
-      icon: MessageSquareIcon,
-      keywords: [
-        "whatsapp",
-        "whatsapp feature",
-        "notifications",
-        "alerts",
-        "messages",
-        "llm",
-      ],
     },
   ],
 };

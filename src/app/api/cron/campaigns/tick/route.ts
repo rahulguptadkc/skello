@@ -6,9 +6,59 @@ import { drainPendingCheckoutEvents } from "@/lib/shopify/checkout-events";
 import { dispatchDueCodConfirmations } from "@/lib/shopify/cod-confirmation";
 import { dispatchDueRecoveries } from "@/lib/shopify/recovery";
 import { dispatchDueWhatsAppRecoveries } from "@/lib/shopify/whatsapp-recovery";
+import { GET as getWhatsAppCapture } from "@/app/api/whatsapp-capture/route";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+let lastScheduledWhatsAppSlot = "";
+
+async function runScheduledWhatsAppCapture() {
+  const timeZone = process.env.WHATSAPP_CAPTURE_TIMEZONE || "Asia/Kolkata";
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date());
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((item) => item.type === type)?.value || "00";
+  const hour = Number(part("hour"));
+  const minute = part("minute");
+
+  // Automatically run hourly from 9:00 AM to 8:00 PM IST (minute 00, hours 9 to 20).
+  if (minute !== "00" || hour < 9 || hour > 20) {
+    return { scheduled: false, reason: "outside_whatsapp_capture_schedule" };
+  }
+
+  const slot = `${part("year")}-${part("month")}-${part("day")}T${part("hour")}`;
+  if (slot === lastScheduledWhatsAppSlot) {
+    return { scheduled: false, reason: "slot_already_processed", slot };
+  }
+  lastScheduledWhatsAppSlot = slot;
+
+  try {
+    const response = await getWhatsAppCapture(
+      new Request("http://internal/api/whatsapp-capture?today=true"),
+    );
+    if (!response.ok) {
+      lastScheduledWhatsAppSlot = "";
+      throw new Error(`WhatsApp capture returned HTTP ${response.status}`);
+    }
+    const result = await response.json();
+    return {
+      scheduled: true,
+      slot,
+      count: result.data?.count ?? result.count ?? 0,
+    };
+  } catch (error) {
+    lastScheduledWhatsAppSlot = "";
+    throw error;
+  }
+}
 
 function timingSafeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
@@ -39,6 +89,7 @@ export async function POST(request: NextRequest) {
       callbacks,
       recoveries,
       whatsapp,
+      whatsappCapture,
       codConfirmations,
       checkoutEvents,
     ] = await Promise.allSettled([
@@ -46,6 +97,7 @@ export async function POST(request: NextRequest) {
       dispatchDueCallbacks(),
       dispatchDueRecoveries(),
       dispatchDueWhatsAppRecoveries(),
+      runScheduledWhatsAppCapture(),
       dispatchDueCodConfirmations(),
       drainPendingCheckoutEvents(),
     ]);
@@ -55,6 +107,7 @@ export async function POST(request: NextRequest) {
       callbacks.status === "rejected" &&
       recoveries.status === "rejected" &&
       whatsapp.status === "rejected" &&
+      whatsappCapture.status === "rejected" &&
       codConfirmations.status === "rejected" &&
       checkoutEvents.status === "rejected"
     ) {
@@ -83,6 +136,10 @@ export async function POST(request: NextRequest) {
           whatsapp.status === "fulfilled"
             ? whatsapp.value
             : { error: String(whatsapp.reason) },
+        whatsappCapture:
+          whatsappCapture.status === "fulfilled"
+            ? whatsappCapture.value
+            : { error: String(whatsappCapture.reason) },
         codConfirmations:
           codConfirmations.status === "fulfilled"
             ? codConfirmations.value

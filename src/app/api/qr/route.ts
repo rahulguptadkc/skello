@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import {
   getWhatsAppServiceState,
   startWhatsAppService,
-} from "@/lib/whatsapp/baileys-service";
+} from "@/anugraha/baileys-service";
 
 export const runtime = "nodejs";
 

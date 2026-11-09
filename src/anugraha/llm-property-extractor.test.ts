@@ -4,6 +4,7 @@ import {
   ruleBasedPropertyExtract,
   formatListingConfigDisplay,
   formatListingPriceDisplay,
+  extractProjectName,
   BROKER_EXTRACTOR_SYSTEM_PROMPT,
 } from "./llm-property-extractor";
 
@@ -189,12 +190,55 @@ Koramangala, HSR Layout`;
 
       expect(alt1.code).toBe("WBA");
       expect(alt1.option_group).toBe("msg-or-test-g1");
+      expect(alt1.project_name).toBe("Raheja Viverea");
       expect(formatListingConfigDisplay(alt1)).toContain("4 BHK");
       expect(formatListingPriceDisplay(alt1)).toBe("—"); // Never 5000+ sqft as price!
 
       expect(alt2.code).toBe("WBH");
       expect(alt2.option_group).toBe("msg-or-test-g1");
+      expect(alt2.project_name).toBe("Raheja Viverea");
       expect(formatListingConfigDisplay(alt2)).toContain("HOUSE");
+    });
+  });
+
+  describe("extractProjectName helper", () => {
+    it("extracts project name from explicit Project: / Building: label", () => {
+      expect(
+        extractProjectName("URGENT REQUIREMENT: 4BHK Apartment\nProject : Raheja Viverea, Koramangala"),
+      ).toBe("Raheja Viverea");
+      expect(
+        extractProjectName("Commercial office space on long term lease in Cyber City building 9."),
+      ).toBe("Cyber City building 9");
+    });
+
+    it("extracts project name from builder brands & known layouts", () => {
+      expect(
+        extractProjectName("Prestige Autumn Leaves \n\nFabulous plotted development by prestige group !!"),
+      ).toBe("Prestige Autumn Leaves");
+      expect(
+        extractProjectName("Available for sale: 4BHK Luxury Apartment in DLF Phase 2, 3400 sq ft"),
+      ).toBe("DLF Phase 2");
+      expect(
+        extractProjectName("Direct Buyer: Looking to buy a 3BHK ready to move flat in DLF Phase 5"),
+      ).toBe("DLF Phase 5");
+      expect(
+        extractProjectName("Luxury 4BHK Villa For Sale in Palm Meadows, Whitefield."),
+      ).toBe("Palm Meadows");
+      expect(
+        extractProjectName("3 bhk Villa in MSR North City Layout from August 15th at 75K"),
+      ).toBe("MSR North City Layout");
+      expect(
+        extractProjectName("Looking for 3BHK in Prestige Shantiniketan, Whitefield"),
+      ).toBe("Prestige Shantiniketan");
+    });
+
+    it("returns undefined when no project or society is specified", () => {
+      expect(
+        extractProjectName("3 BHK in Koramangala available for rent at 60k"),
+      ).toBeUndefined();
+      expect(
+        extractProjectName("1 Acre Land for sale in Bagalur, Airport surrounding"),
+      ).toBeUndefined();
     });
   });
 
@@ -207,6 +251,7 @@ Koramangala, HSR Layout`;
       expect(BROKER_EXTRACTOR_SYSTEM_PROMPT).toContain("STEP 5: DEAL TYPE");
       expect(BROKER_EXTRACTOR_SYSTEM_PROMPT).toContain("STEP 6: NUMBERS");
       expect(BROKER_EXTRACTOR_SYSTEM_PROMPT).toContain("STEP 7: LOCATION");
+      expect(BROKER_EXTRACTOR_SYSTEM_PROMPT).toContain("project_name");
     });
   });
 });

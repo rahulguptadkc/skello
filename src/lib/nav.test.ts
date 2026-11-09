@@ -50,7 +50,7 @@ describe("getOutreachSection / vertical separation", () => {
 describe("activeNavHref", () => {
   it("resolves an exact match", () => {
     expect(activeNavHref("/leads")).toBe("/leads");
-    expect(activeNavHref("/whatsapp-feature")).toBe("/whatsapp-feature");
+    expect(activeNavHref("/whatsapp-feature")).toBeNull();
   });
 
   it("resolves a child route to its nav parent", () => {
@@ -152,9 +152,7 @@ describe("breadcrumbsFor", () => {
     expect(breadcrumbsFor("/leads")).toEqual([
       { label: "Leads", href: "/leads" },
     ]);
-    expect(breadcrumbsFor("/whatsapp-feature")).toEqual([
-      { label: "WhatsApp Feature", href: "/whatsapp-feature" },
-    ]);
+    expect(breadcrumbsFor("/whatsapp-feature")).toEqual([]);
   });
 
   it("gives a URL-nested but nav-top-level page a single crumb", () => {

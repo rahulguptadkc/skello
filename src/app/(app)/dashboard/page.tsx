@@ -10,6 +10,7 @@ import {
   UsersIcon,
   ZapIcon,
 } from "lucide-react";
+import { redirect } from "next/navigation";
 
 import { SectionLabel } from "@/components/app/section-label";
 import { ActivityBarChart } from "@/components/app/analytics/activity-bar-chart";
@@ -38,6 +39,7 @@ import {
   parseRange,
 } from "@/lib/analytics/dashboard";
 import { requireSession } from "@/lib/auth/session";
+import { isWhatsAppScannerOnlyOrganisation } from "@/lib/auth/organisation-features";
 import type { WidgetExecuteRow } from "@/lib/validations/dashboard-widget";
 import type { OrgDashboardWidget } from "@/types/dashboard-widget";
 
@@ -49,6 +51,9 @@ interface PageProps {
 
 export default async function DashboardPage({ searchParams }: PageProps) {
   const session = await requireSession();
+  if (isWhatsAppScannerOnlyOrganisation(session.organisation.id)) {
+    redirect("/whatsapp-feature");
+  }
   const sp = (await searchParams) ?? {};
   const rawRange = Array.isArray(sp.range) ? sp.range[0] : sp.range;
   const range = parseRange(rawRange);

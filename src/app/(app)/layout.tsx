@@ -1,5 +1,7 @@
 import { countLeadCallActivity } from "@/actions/lead-activity";
 import { requireSession } from "@/lib/auth/session";
+import { isWhatsAppScannerOnlyOrganisation } from "@/anugraha/organisation-features";
+import { ScannerOnlyGuard } from "@/anugraha/scanner-only-guard";
 import { Topbar } from "@/components/app/topbar";
 import { SidebarNav } from "@/components/app/sidebar-nav";
 import { MobileNav } from "@/components/app/mobile-nav";
@@ -15,6 +17,15 @@ export default async function AppLayout({
   children: React.ReactNode;
 }) {
   const session = await requireSession();
+
+  // Anugraha uses the WhatsApp scanner as its dedicated workspace.
+  if (isWhatsAppScannerOnlyOrganisation(session.organisation.id)) {
+    return (
+      <main className="min-h-screen bg-muted/30 px-4 py-6 md:px-8 md:py-8">
+        <ScannerOnlyGuard>{children}</ScannerOnlyGuard>
+      </main>
+    );
+  }
 
   const uniqueResult = await countLeadCallActivity({
     org_slug: session.organisation.slug,

@@ -42,7 +42,12 @@ export function Logo({
         </span>
       </span>
       {showWordmark ? (
-        <span className="font-heading text-[16px] font-bold tracking-tight text-white">
+        <span
+          className={cn(
+            "font-heading text-[16px] font-bold tracking-tight",
+            sidebarTone ? "text-sidebar-foreground" : "text-foreground",
+          )}
+        >
           SKELO
         </span>
       ) : null}

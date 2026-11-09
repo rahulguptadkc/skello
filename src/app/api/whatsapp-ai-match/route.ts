@@ -5,7 +5,7 @@ import {
   SAMPLE_REAL_ESTATE_WHATSAPP_MESSAGES,
   type RawInputMessage,
   type AILeadAnalysisResult,
-} from "@/lib/whatsapp/openai-lead-matcher";
+} from "@/anugraha/openai-lead-matcher";
 import { getCapturedBuffer } from "@/app/api/whatsapp-capture/route";
 
 export async function GET() {

@@ -159,3 +159,109 @@ function PageLink({
     </Link>
   );
 }
+
+export interface ClientPaginationProps {
+  total: number;
+  pageSize: number;
+  currentPage: number; // 1-based
+  onPageChange: (page: number) => void;
+  itemName?: string;
+  className?: string;
+}
+
+export function ClientPagination({
+  total,
+  pageSize,
+  currentPage,
+  onPageChange,
+  itemName,
+  className,
+}: ClientPaginationProps) {
+  if (total <= 0) return null;
+
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const safePage = Math.max(1, Math.min(currentPage, totalPages));
+  const start = (safePage - 1) * pageSize + 1;
+  const end = Math.min(start + pageSize - 1, total);
+
+  if (totalPages <= 1) {
+    return (
+      <div className={cn("flex items-center justify-between px-1 py-3 text-xs text-muted-foreground", className)}>
+        <span>
+          Showing {start}–{end} of {total.toLocaleString()}{itemName ? ` ${itemName}` : ""}
+        </span>
+      </div>
+    );
+  }
+
+  const pages = pageList(safePage, totalPages);
+
+  return (
+    <div className={cn("flex flex-col items-center justify-between gap-3 px-1 py-3 sm:flex-row", className)}>
+      <div className="text-xs text-muted-foreground">
+        Showing <span className="tabular-nums font-medium text-foreground">{start}</span>–
+        <span className="tabular-nums font-medium text-foreground">{end}</span> of{" "}
+        <span className="tabular-nums font-medium text-foreground">{total.toLocaleString()}</span>
+        {itemName ? ` ${itemName}` : ""}
+      </div>
+      <nav
+        aria-label="Pagination"
+        className="inline-flex items-center gap-1 rounded-lg border border-border/70 bg-card p-1 shadow-2xs"
+      >
+        <button
+          type="button"
+          onClick={() => onPageChange(safePage - 1)}
+          disabled={safePage <= 1}
+          aria-label="Previous page"
+          className={cn(
+            "inline-flex h-7 min-w-7 items-center justify-center rounded-md px-2 text-xs font-medium tabular-nums transition-colors",
+            "text-muted-foreground hover:bg-muted hover:text-foreground",
+            safePage <= 1 && "pointer-events-none opacity-40",
+          )}
+        >
+          <ChevronLeftIcon className="size-3.5" />
+        </button>
+        {pages.map((p, idx) =>
+          p === "ellipsis" ? (
+            <span
+              key={`e-${idx}`}
+              aria-hidden
+              className="px-2 text-xs text-muted-foreground select-none"
+            >
+              …
+            </span>
+          ) : (
+            <button
+              type="button"
+              key={p}
+              onClick={() => onPageChange(p)}
+              aria-label={`Page ${p}`}
+              aria-current={p === safePage ? "page" : undefined}
+              className={cn(
+                "inline-flex h-7 min-w-7 items-center justify-center rounded-md px-2 text-xs font-medium tabular-nums transition-colors",
+                p === safePage
+                  ? "bg-foreground text-background font-semibold shadow-2xs"
+                  : "text-muted-foreground hover:bg-muted hover:text-foreground",
+              )}
+            >
+              {p}
+            </button>
+          ),
+        )}
+        <button
+          type="button"
+          onClick={() => onPageChange(safePage + 1)}
+          disabled={safePage >= totalPages}
+          aria-label="Next page"
+          className={cn(
+            "inline-flex h-7 min-w-7 items-center justify-center rounded-md px-2 text-xs font-medium tabular-nums transition-colors",
+            "text-muted-foreground hover:bg-muted hover:text-foreground",
+            safePage >= totalPages && "pointer-events-none opacity-40",
+          )}
+        >
+          <ChevronRightIcon className="size-3.5" />
+        </button>
+      </nav>
+    </div>
+  );
+}

@@ -3,7 +3,7 @@ import {
   getWhatsAppServiceState,
   startWhatsAppService,
   disconnectWhatsAppService,
-} from "@/lib/whatsapp/baileys-service";
+} from "@/anugraha/baileys-service";
 
 export const runtime = "nodejs";
 

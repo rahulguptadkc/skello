@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
+import fs from "node:fs";
+import path from "node:path";
 import {
   classifyPropertyMessage,
   type PropertyIntent,
-} from "@/lib/whatsapp/intent-classifier";
-import { fallbackDecomposeBangaloreMessage } from "@/lib/whatsapp/openai-lead-matcher";
+} from "@/anugraha/intent-classifier";
+import { fallbackDecomposeBangaloreMessage } from "@/anugraha/openai-lead-matcher";
 import {
   fetchDiscoveredGroups,
   setPermittedGroupIds,
@@ -15,15 +17,16 @@ import {
   extractContactFromMessage,
   resolvePhoneNumberFromParticipant,
   type DiscoveredWhatsAppGroup,
-} from "@/lib/whatsapp/baileys-service";
+} from "@/anugraha/baileys-service";
 
 import {
   isPotentialPropertyMessage,
   extractPropertyListingsWithLLM,
   formatListingConfigDisplay,
   formatListingPriceDisplay,
+  extractProjectName,
   type ExtractedPropertyListing,
-} from "@/lib/whatsapp/llm-property-extractor";
+} from "@/anugraha/llm-property-extractor";
 
 export interface CapturedMessageRecord {
   id: string;
@@ -112,30 +115,26 @@ let allowedGroupIds: Set<string> = new Set([
   DEFAULT_GROUPS[1].id,
 ]);
 
-export function get9amCycleInfo(referenceDate: Date = new Date()) {
+export function getHourlyCycleInfo(referenceDate: Date = new Date()) {
   const now = referenceDate;
   const currentHour = now.getHours();
-  let windowStart: Date;
-  let windowEnd: Date;
 
-  if (currentHour >= 9) {
-    windowStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 9, 0, 0, 0);
-    windowEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 9, 0, 0, 0);
+  let nextSlotDate: Date;
+  if (currentHour < 9) {
+    nextSlotDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 9, 0, 0, 0);
+  } else if (currentHour < 20) {
+    nextSlotDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), currentHour + 1, 0, 0, 0);
   } else {
-    windowStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 9, 0, 0, 0);
-    windowEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 9, 0, 0, 0);
+    nextSlotDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 9, 0, 0, 0);
   }
 
-  // Next 1-hour batch slot (cadence: top of every hour, e.g., 10:00, 11:00, 12:00, 13:00...)
-  const nextSlotDate = new Date(
-    now.getFullYear(),
-    now.getMonth(),
-    now.getDate(),
-    now.getHours() + 1,
-    0,
-    0,
-    0,
-  );
+  const isToday = nextSlotDate.getDate() === now.getDate();
+  const nextSlotFormatted = isToday
+    ? nextSlotDate.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+    : `Tomorrow, ${nextSlotDate.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+
+  const windowStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 9, 0, 0, 0);
+  const windowEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 20, 0, 0, 0);
 
   const formatShort = (d: Date) =>
     d.toLocaleDateString("en-IN", { day: "numeric", month: "short" });
@@ -143,11 +142,15 @@ export function get9amCycleInfo(referenceDate: Date = new Date()) {
   return {
     windowStartTs: windowStart.getTime(),
     windowEndTs: windowEnd.getTime(),
-    windowLabel: `${formatShort(windowStart)} 9:00 AM – ${formatShort(windowEnd)} 9:00 AM`,
-    cadence: "Every 1 Hour (Automated Hourly Batch)",
-    nextSlotFormatted: nextSlotDate.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+    windowLabel: `${formatShort(windowStart)} 9:00 AM – ${formatShort(windowEnd)} 8:00 PM`,
+    cadence: "Hourly 9 AM–8 PM (Automated Batch)",
+    nextSlotFormatted,
+    nextSlotIso: nextSlotDate.toISOString(),
   };
 }
+
+export const get9amCycleInfo = getHourlyCycleInfo;
+export const get12pmCycleInfo = getHourlyCycleInfo;
 
 export function isTimestampToday(ts: number, referenceDate: Date = new Date()): boolean {
   if (typeof ts !== "number" || isNaN(ts)) return true;
@@ -291,6 +294,7 @@ function generateTodaysMockMessages(): CapturedMessageRecord[] {
       configuration: classified.configuration,
       budget_or_price: classified.budgetOrPrice,
       location: classified.location,
+      project_name: extractProjectName(p.message_text) || undefined,
       tags: classified.tags,
       timestamp: new Date(rawTs).toLocaleTimeString([], {
         hour: "numeric",
@@ -418,6 +422,7 @@ function ensureMessagesForPermittedGroups(
             confidence: 0.95,
             configuration: item.config !== "—" ? item.config : undefined,
             budget_or_price: item.price !== "—" ? item.price : undefined,
+            project_name: extractProjectName(item.text) || extractProjectName(p.text) || undefined,
             location: item.location !== "Bangalore" ? item.location : undefined,
             tags: [item.intent, item.config, item.location].filter(Boolean),
             timestamp: new Date(subTs).toLocaleTimeString([], {
@@ -435,6 +440,7 @@ function ensureMessagesForPermittedGroups(
             existingSub.intent = subRecord.intent;
             existingSub.configuration = subRecord.configuration;
             existingSub.budget_or_price = subRecord.budget_or_price;
+            existingSub.project_name = subRecord.project_name;
             existingSub.location = subRecord.location;
           }
         });
@@ -459,6 +465,7 @@ function ensureMessagesForPermittedGroups(
             confidence: classified.confidence,
             configuration: classified.configuration,
             budget_or_price: classified.budgetOrPrice,
+            project_name: extractProjectName(p.text) || undefined,
             location: classified.location,
             tags: classified.tags,
             timestamp: new Date(rawTs).toLocaleTimeString([], {
@@ -474,6 +481,7 @@ function ensureMessagesForPermittedGroups(
           existing.intent = classified.intent;
           existing.configuration = classified.configuration;
           existing.budget_or_price = classified.budgetOrPrice;
+          existing.project_name = extractProjectName(p.text) || undefined;
           existing.location = classified.location;
         }
       }
@@ -481,7 +489,83 @@ function ensureMessagesForPermittedGroups(
   }
 }
 
-let capturedBuffer: CapturedMessageRecord[] = generateTodaysMockMessages();
+const CAPTURED_BUFFER_FILE = path.join(process.cwd(), "auth", "captured_buffer.json");
+
+function backfillProjectNames(items: CapturedMessageRecord[]): boolean {
+  let changed = false;
+  for (const item of items) {
+    if (!item.project_name && item.message_text) {
+      const proj = extractProjectName(item.message_text);
+      if (proj) {
+        item.project_name = proj;
+        changed = true;
+      }
+    }
+  }
+  return changed;
+}
+
+function loadCapturedBuffer(): {
+  items: CapturedMessageRecord[];
+  updatedAt: string | null;
+} | null {
+  try {
+    if (!fs.existsSync(CAPTURED_BUFFER_FILE)) return null;
+    const parsed: unknown = JSON.parse(fs.readFileSync(CAPTURED_BUFFER_FILE, "utf8"));
+    if (Array.isArray(parsed)) {
+      const items = parsed as CapturedMessageRecord[];
+      backfillProjectNames(items);
+      return { items, updatedAt: null };
+    }
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      Array.isArray((parsed as { items?: unknown }).items)
+    ) {
+      const snapshot = parsed as { items: CapturedMessageRecord[]; updatedAt?: string };
+      backfillProjectNames(snapshot.items);
+      return { items: snapshot.items, updatedAt: snapshot.updatedAt || null };
+    }
+    return null;
+  } catch (err) {
+    console.error("[WhatsApp Capture] Failed to load captured feed cache:", err);
+    return null;
+  }
+}
+
+function saveCapturedBuffer() {
+  try {
+    fs.mkdirSync(path.dirname(CAPTURED_BUFFER_FILE), { recursive: true });
+    capturedBufferUpdatedAt = new Date().toISOString();
+    fs.writeFileSync(
+      CAPTURED_BUFFER_FILE,
+      JSON.stringify({ updatedAt: capturedBufferUpdatedAt, items: capturedBuffer }),
+      "utf8",
+    );
+  } catch (err) {
+    console.error("[WhatsApp Capture] Failed to persist captured feed cache:", err);
+  }
+}
+
+const loadedCapturedBuffer = loadCapturedBuffer();
+let capturedBufferUpdatedAt = loadedCapturedBuffer?.updatedAt || null;
+let capturedBuffer: CapturedMessageRecord[] =
+  loadedCapturedBuffer?.items || generateTodaysMockMessages();
+if (backfillProjectNames(capturedBuffer)) {
+  saveCapturedBuffer();
+}
+
+function refreshCapturedBufferFromDisk() {
+  const latest = loadCapturedBuffer();
+  if (latest) {
+    const updated = backfillProjectNames(latest.items);
+    capturedBuffer = latest.items;
+    capturedBufferUpdatedAt = latest.updatedAt;
+    if (updated) {
+      saveCapturedBuffer();
+    }
+  }
+}
 
 export function getCapturedBuffer(): CapturedMessageRecord[] {
   return capturedBuffer;
@@ -525,7 +609,7 @@ async function processLiveMessagesIntoBuffer(
       const locStr =
         listing.localities && listing.localities.length > 0
           ? listing.localities.join(", ")
-          : listing.project_name || "Bangalore";
+          : "Bangalore";
 
       // Listing contact numbers can belong to someone other than the person
       // who posted the message. Sender identity comes only from Baileys.
@@ -580,9 +664,14 @@ async function processLiveMessagesIntoBuffer(
 export async function POST(req: Request) {
   try {
     const body = await req.json();
+    refreshCapturedBufferFromDisk();
 
-    // Action 1: Set Permitted Groups & Scrape Today's Messages
-    if (body.action === "set_permissions_and_scrape") {
+    // Saving group permissions does not fetch messages; ingestion is owned by
+    // the scheduled backend job or the explicit Fetch button.
+    if (
+      body.action === "set_permissions" ||
+      body.action === "set_permissions_and_scrape"
+    ) {
       const { selectedGroupIds } = body as { selectedGroupIds: string[] };
       if (!Array.isArray(selectedGroupIds)) {
         return NextResponse.json(
@@ -590,67 +679,9 @@ export async function POST(req: Request) {
           { status: 400 },
         );
       }
-
       allowedGroupIds = new Set(selectedGroupIds);
       setPermittedGroupIds(selectedGroupIds);
-
-      // Refresh groups list from connected Baileys account (cache/disk first, non-blocking)
-      const liveGroups = await fetchDiscoveredGroups(false);
-      const isConnected = hasSavedCredentials();
-      const activeGroups = isConnected
-        ? liveGroups
-        : liveGroups.length > 0
-          ? liveGroups
-          : discoveredGroups;
-
-      // Merge any live messages captured via Baileys socket
-      const liveMsgs = getLiveCapturedMessages();
-      const groupsWithRealMsgs = new Set(
-        liveMsgs.map((m) => m.groupId.split("@")[0].replace(/[^0-9]/g, "")).filter(Boolean),
-      );
-
-      // Remove mock seeds for groups that now have real messages, and purge non-property chatter
-      capturedBuffer = capturedBuffer.filter((m) => {
-        if (m.id.startsWith("seed-")) {
-          const mDigits = m.group_id.split("@")[0].replace(/[^0-9]/g, "");
-          return !groupsWithRealMsgs.has(mDigits);
-        }
-        return (
-          (Boolean(m.code) || isPotentialPropertyMessage(m.message_text)) &&
-          (m.intent !== "general" || Boolean(m.code))
-        );
-      });
-
-      // Only generate mock presets for groups that do NOT have real captured messages
-      const permittedWithoutLive = selectedGroupIds.filter((gid) => {
-        const digits = gid.split("@")[0].replace(/[^0-9]/g, "");
-        return !groupsWithRealMsgs.has(digits);
-      });
-      if (permittedWithoutLive.length > 0) {
-        ensureMessagesForPermittedGroups(permittedWithoutLive, activeGroups);
-      }
-
-      // Process live messages with property keyword filter and OpenAI broker extractor
-      await processLiveMessagesIntoBuffer(liveMsgs);
-
-      // Filter buffer to only selected groups, today's messages, and valid property records
-      const scrapedFilteredResults = capturedBuffer
-        .filter(
-          (m) =>
-            allowedGroupIds.has(m.group_id) &&
-            isTimestampToday(m.raw_timestamp) &&
-            (Boolean(m.code) || isPotentialPropertyMessage(m.message_text)) &&
-            (m.intent !== "general" || Boolean(m.code)),
-        )
-        .sort((a, b) => (b.raw_timestamp || 0) - (a.raw_timestamp || 0));
-
-      return NextResponse.json({
-        success: true,
-        allowedCount: allowedGroupIds.size,
-        scrapedCount: scrapedFilteredResults.length,
-        items: scrapedFilteredResults,
-        discoveredGroups: activeGroups,
-      });
+      return NextResponse.json({ success: true, permittedGroupIds: selectedGroupIds });
     }
 
     // Action 2: Real Baileys Discovered Groups Sync / Refresh
@@ -731,6 +762,7 @@ export async function POST(req: Request) {
           confidence: 0.95,
           configuration: item.config !== "—" ? item.config : undefined,
           budget_or_price: item.price !== "—" ? item.price : undefined,
+          project_name: extractProjectName(item.text) || extractProjectName(message_text) || undefined,
           location: item.location !== "Bangalore" ? item.location : undefined,
           tags: [item.intent, item.config, item.location].filter(Boolean),
           timestamp: new Date(rawTs + subIdx * 1000).toLocaleTimeString([], {
@@ -743,6 +775,7 @@ export async function POST(req: Request) {
         capturedBuffer.unshift(subRecord);
         addedRecords.push(subRecord);
       });
+      saveCapturedBuffer();
       return NextResponse.json({
         success: true,
         count: addedRecords.length,
@@ -764,6 +797,7 @@ export async function POST(req: Request) {
       configuration: classified.configuration,
       budget_or_price: classified.budgetOrPrice,
       location: classified.location,
+      project_name: body.project_name || extractProjectName(message_text) || undefined,
       tags: classified.tags,
       timestamp: new Date(rawTs).toLocaleTimeString([], {
         hour: "numeric",
@@ -777,6 +811,7 @@ export async function POST(req: Request) {
     if (capturedBuffer.length > 500) {
       capturedBuffer.pop();
     }
+    saveCapturedBuffer();
 
     return NextResponse.json({
       success: true,
@@ -795,9 +830,48 @@ export async function POST(req: Request) {
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
+  refreshCapturedBufferFromDisk();
   const todayOnly = searchParams.get("today") !== "false"; // default true
   const groupIdsParam = searchParams.get("groups");
   const targetGroupIds = groupIdsParam ? groupIdsParam.split(",") : null;
+
+  // Read the latest backend snapshot without triggering message processing.
+  if (searchParams.get("cached") === "true") {
+    let cachedItems = capturedBuffer.filter(
+      (m) =>
+        (Boolean(m.code) || isPotentialPropertyMessage(m.message_text)) &&
+        (m.intent !== "general" || Boolean(m.code)) &&
+        (!todayOnly || isTimestampToday(m.raw_timestamp)),
+    );
+    const permittedIds = getPermittedGroupIds();
+    const effectiveAllowed = permittedIds.length > 0
+      ? permittedIds
+      : Array.from(allowedGroupIds);
+    const groupFilter = targetGroupIds?.length ? targetGroupIds : effectiveAllowed;
+    if (groupFilter.length > 0) {
+      const groupSet = new Set(groupFilter.map((id) => id.replace(/:.*@/, "@").toLowerCase()));
+      const groupDigits = new Set(groupFilter.map((id) => id.split("@")[0].replace(/[^0-9]/g, "")));
+      cachedItems = cachedItems.filter((m) => {
+        const groupId = m.group_id.replace(/:.*@/, "@").toLowerCase();
+        return groupSet.has(groupId) || groupDigits.has(groupId.split("@")[0].replace(/[^0-9]/g, ""));
+      });
+    }
+    cachedItems.sort((a, b) => (b.raw_timestamp || 0) - (a.raw_timestamp || 0));
+    return NextResponse.json({
+      success: true,
+      data: {
+        count: cachedItems.length,
+        allowedGroupCount: effectiveAllowed.length,
+        permittedGroupIds: effectiveAllowed,
+        isConnected: hasSavedCredentials(),
+        fetchedAt: capturedBufferUpdatedAt,
+        ...(globalThis.__skeloDiscoveredGroups?.length
+          ? { discoveredGroups: globalThis.__skeloDiscoveredGroups }
+          : {}),
+        items: cachedItems,
+      },
+    });
+  }
 
   // Auto-connect Baileys in background if credentials exist and socket is not active
   if (hasSavedCredentials()) {
@@ -852,6 +926,7 @@ export async function GET(req: Request) {
 
   // Process live messages with property keyword filter and OpenAI broker extractor
   await processLiveMessagesIntoBuffer(liveMsgs);
+  saveCapturedBuffer();
 
   // Filter buffer to only selected groups, today's messages, and valid property records
   let filtered = capturedBuffer.filter(
@@ -901,6 +976,7 @@ export async function GET(req: Request) {
       discoveredGroups: activeGroups,
       isConnected,
       cycleInfo: get9amCycleInfo(),
+      fetchedAt: capturedBufferUpdatedAt,
       items: filtered,
     },
   });
