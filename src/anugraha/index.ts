@@ -4,6 +4,7 @@ export * from "./bangalore-locations";
 export * from "./intent-classifier";
 export * from "./project-extractor";
 export * from "./property-script-matcher";
+export * from "./property-deduplicator";
 export * from "./qr-generator";
 export * from "./whatsapp-feature-view";
 export * from "./scanner-only-guard";

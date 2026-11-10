@@ -27,6 +27,7 @@ import {
   extractProjectName,
   type ExtractedPropertyListing,
 } from "@/anugraha/llm-property-extractor";
+import { deduplicateCapturedMessages } from "@/anugraha/property-deduplicator";
 
 export interface CapturedMessageRecord {
   id: string;
@@ -55,6 +56,7 @@ export interface CapturedMessageRecord {
   project_name?: string;
   contact_name?: string;
   contact_numbers?: string[];
+  is_active?: boolean;
 }
 
 export interface DiscoveredGroupRecord {
@@ -524,6 +526,13 @@ function loadCapturedBuffer(): {
     ) {
       const snapshot = parsed as { items: CapturedMessageRecord[]; updatedAt?: string };
       backfillProjectNames(snapshot.items);
+      // Deduplicate: if all 5 fields are same (intent, config, budget/price, project name, location),
+      // keep the latest one and remove the earlier duplicate from the database
+      snapshot.items = deduplicateCapturedMessages(snapshot.items);
+      // By default every row is active (is_active: true) unless explicitly toggled inactive
+      snapshot.items.forEach((item) => {
+        item.is_active = item.is_active === false ? false : true;
+      });
       return { items: snapshot.items, updatedAt: snapshot.updatedAt || null };
     }
     return null;
@@ -547,11 +556,17 @@ function saveCapturedBuffer() {
   }
 }
 
+function deduplicateBuffer(): boolean {
+  const initialCount = capturedBuffer.length;
+  capturedBuffer = deduplicateCapturedMessages(capturedBuffer);
+  return capturedBuffer.length !== initialCount;
+}
+
 const loadedCapturedBuffer = loadCapturedBuffer();
 let capturedBufferUpdatedAt = loadedCapturedBuffer?.updatedAt || null;
 let capturedBuffer: CapturedMessageRecord[] =
   loadedCapturedBuffer?.items || generateTodaysMockMessages();
-if (backfillProjectNames(capturedBuffer)) {
+if (deduplicateBuffer() || backfillProjectNames(capturedBuffer)) {
   saveCapturedBuffer();
 }
 
@@ -559,9 +574,9 @@ function refreshCapturedBufferFromDisk() {
   const latest = loadCapturedBuffer();
   if (latest) {
     const updated = backfillProjectNames(latest.items);
-    capturedBuffer = latest.items;
+    capturedBuffer = deduplicateCapturedMessages(latest.items);
     capturedBufferUpdatedAt = latest.updatedAt;
-    if (updated) {
+    if (updated || capturedBuffer.length !== latest.items.length) {
       saveCapturedBuffer();
     }
   }
@@ -659,12 +674,43 @@ async function processLiveMessagesIntoBuffer(
       }
     });
   }
+  deduplicateBuffer();
 }
 
 export async function POST(req: Request) {
   try {
     const body = await req.json();
     refreshCapturedBufferFromDisk();
+
+    // Action: Toggle Property Active / Inactive status
+    if (body.action === "toggle_active" || body.action === "set_status") {
+      const { messageId, isActive } = body as { messageId: string; isActive?: boolean };
+      if (!messageId) {
+        return NextResponse.json(
+          { success: false, error: "messageId is required" },
+          { status: 400 },
+        );
+      }
+
+      // Check captured buffer
+      const item = capturedBuffer.find((m) => m.id === messageId);
+      if (!item) {
+        return NextResponse.json(
+          { success: false, error: `Message with ID "${messageId}" not found in captured buffer` },
+          { status: 404 },
+        );
+      }
+
+      const nextActive = typeof isActive === "boolean" ? isActive : !(item.is_active ?? true);
+      item.is_active = nextActive;
+      saveCapturedBuffer();
+
+      return NextResponse.json({
+        success: true,
+        messageId,
+        isActive: nextActive,
+      });
+    }
 
     // Saving group permissions does not fetch messages; ingestion is owned by
     // the scheduled backend job or the explicit Fetch button.
@@ -808,6 +854,7 @@ export async function POST(req: Request) {
     };
 
     capturedBuffer.unshift(record);
+    deduplicateBuffer();
     if (capturedBuffer.length > 500) {
       capturedBuffer.pop();
     }
@@ -831,6 +878,9 @@ export async function POST(req: Request) {
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   refreshCapturedBufferFromDisk();
+  if (deduplicateBuffer()) {
+    saveCapturedBuffer();
+  }
   const todayOnly = searchParams.get("today") !== "false"; // default true
   const groupIdsParam = searchParams.get("groups");
   const targetGroupIds = groupIdsParam ? groupIdsParam.split(",") : null;
@@ -926,6 +976,7 @@ export async function GET(req: Request) {
 
   // Process live messages with property keyword filter and OpenAI broker extractor
   await processLiveMessagesIntoBuffer(liveMsgs);
+  deduplicateBuffer();
   saveCapturedBuffer();
 
   // Filter buffer to only selected groups, today's messages, and valid property records

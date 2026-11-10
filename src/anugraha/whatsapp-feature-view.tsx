@@ -87,6 +87,7 @@ import {
   type LeadIntent,
 } from "./openai-lead-matcher";
 import { matchPropertiesByRules } from "./property-script-matcher";
+import { deduplicateCapturedMessages } from "./property-deduplicator";
 import { ClientPagination } from "@/components/app/pagination";
 import { cn } from "@/lib/utils";
 import { QRCodeSvg } from "./qr-code-svg";
@@ -141,10 +142,13 @@ export interface CapturedWhatsAppMessage {
   sizeDisplay?: string;
   priceNote?: string;
   projectName?: string;
+  isActive?: boolean;
 }
 
 function runPotentialMatchScript(messages: CapturedWhatsAppMessage[]): AILeadMatch[] {
-  const leads: ExtractedAILead[] = messages.flatMap((message) => {
+  // Only include active properties in the matchmaking algorithm. Inactive/checked properties are excluded.
+  const activeMessages = messages.filter((message) => message.isActive !== false);
+  const leads: ExtractedAILead[] = activeMessages.flatMap((message) => {
     const text = message.messageText || "";
     const demandPhrase = /\b(looking|need|require|required|requirement|want|wanted|seeking|buyer|tenant)\b/i.test(text);
     const codeIntent = message.code?.slice(0, 2).toUpperCase();
@@ -332,6 +336,7 @@ export function WhatsAppFeatureView({
 
   // Inspect message detail modal
   const [inspectMessage, setInspectMessage] = React.useState<CapturedWhatsAppMessage | null>(null);
+  const [confirmToggleMessage, setConfirmToggleMessage] = React.useState<CapturedWhatsAppMessage | null>(null);
 
   // Today's Formatted Date String
   const todayLabel = React.useMemo(() => {
@@ -472,6 +477,7 @@ export function WhatsAppFeatureView({
               size_display?: string;
               price_note?: string;
               project_name?: string;
+              is_active?: boolean;
             }) => ({
               id: item.id,
               senderName: item.sender_name,
@@ -494,25 +500,30 @@ export function WhatsAppFeatureView({
               sizeDisplay: item.size_display,
               priceNote: item.price_note,
               projectName: item.project_name,
+              isActive: item.is_active !== false,
             }),
           );
 
+          // Deduplicate feed: if all 5 fields are same (intent, config, budget/price, project name, location),
+          // keep the latest one and remove the earlier duplicate.
+          const deduplicated = deduplicateCapturedMessages(mapped);
+
           // The backend returns the full today's feed. Re-run matching across
-          // all of it whenever a fresh snapshot arrives, not just new rows.
+          // active properties whenever a fresh snapshot arrives, not just new rows.
           setPotentialMatches(
-            runPotentialMatchScript(mapped.filter((message) => message.isToday !== false)),
+            runPotentialMatchScript(deduplicated.filter((message) => message.isToday !== false && message.isActive !== false)),
           );
 
           setMessages((prev) => {
             const existingIds = new Set(prev.map((m) => m.id));
-            const newItems = mapped.filter((m) => !existingIds.has(m.id));
+            const newItems = deduplicated.filter((m) => !existingIds.has(m.id));
             if (newItems.length > 0) {
               toast.success(`Captured ${newItems.length} new WhatsApp inquiries`);
             } else if (!silent) {
               toast.info("WhatsApp inquiries feed up to date.");
             }
             const convertedIds = new Set(prev.filter((m) => m.convertedToLead).map((m) => m.id));
-            return mapped.map((m) => ({
+            return deduplicated.map((m) => ({
               ...m,
               convertedToLead: m.convertedToLead || convertedIds.has(m.id),
             }));
@@ -774,6 +785,49 @@ export function WhatsAppFeatureView({
     toast.success(
       `Lead created for ${msg.senderName} (${msg.intent.toUpperCase()} · ${msg.configuration || "Property"}) in Skelo CRM!`,
     );
+  }
+
+  // Toggle Property Active / Inactive status (Checked)
+  async function handleToggleActive(msg: CapturedWhatsAppMessage) {
+    const nextActive = !(msg.isActive !== false);
+
+    // Optimistic UI state update
+    setMessages((prev) => {
+      const updated = prev.map((m) => (m.id === msg.id ? { ...m, isActive: nextActive } : m));
+      // Re-run potential matchmaking excluding inactive properties
+      setPotentialMatches(
+        runPotentialMatchScript(updated.filter((m) => m.isToday !== false && m.isActive !== false)),
+      );
+      return updated;
+    });
+
+    if (inspectMessage && inspectMessage.id === msg.id) {
+      setInspectMessage((prev) => (prev ? { ...prev, isActive: nextActive } : null));
+    }
+
+    try {
+      const res = await fetch("/api/whatsapp-capture", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "toggle_active",
+          messageId: msg.id,
+          isActive: nextActive,
+        }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        if (!nextActive) {
+          toast.success("Property marked as Checked & Inactive (excluded from potential matches).");
+        } else {
+          toast.success("Property reactivated (included in potential matches).");
+        }
+      } else {
+        toast.error(json.error || "Failed to update property status.");
+      }
+    } catch {
+      toast.error("Network error updating property status.");
+    }
   }
 
   // Filtered Potential Matches for the table
@@ -1819,6 +1873,7 @@ export function WhatsAppFeatureView({
                         className={cn(
                           "hover:bg-muted/30 transition-colors group/row",
                           msg.convertedToLead && "bg-emerald-50/15 dark:bg-emerald-950/10",
+                          msg.isActive === false && "opacity-60 bg-muted/15",
                         )}
                       >
                         {/* 1. Sender Contact */}
@@ -1880,6 +1935,11 @@ export function WhatsAppFeatureView({
                             {msg.dealType && msg.dealType !== "standard" && (
                               <Badge className="bg-orange-100 text-orange-800 border-orange-300 dark:bg-orange-950 dark:text-orange-300 text-[9px] font-bold px-1.5 py-0 shadow-2xs">
                                 {msg.dealType}
+                              </Badge>
+                            )}
+                            {msg.isActive === false && (
+                              <Badge className="bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-950/60 dark:text-amber-300 dark:border-amber-800 text-[9px] font-bold px-1.5 py-0 shadow-2xs">
+                                INACTIVE
                               </Badge>
                             )}
                           </div>
@@ -1946,10 +2006,13 @@ export function WhatsAppFeatureView({
                               variant="outline"
                               size="xs"
                               onClick={() => setInspectMessage(msg)}
-                              className="gap-1.5 text-xs h-7.5 text-foreground hover:bg-muted border-border/70 shadow-2xs font-medium"
-                              title="View actual message"
+                              className={cn(
+                                "gap-1.5 text-xs h-7.5 hover:bg-muted border-border/70 shadow-2xs font-medium",
+                                msg.isActive === false ? "text-muted-foreground border-amber-500/30" : "text-foreground",
+                              )}
+                              title={msg.isActive === false ? "View inactive (checked) inquiry" : "View actual message"}
                             >
-                              <EyeIcon className="h-3.5 w-3.5 text-blue-500" />
+                              <EyeIcon className={cn("h-3.5 w-3.5", msg.isActive === false ? "text-amber-500" : "text-blue-500")} />
                               <span>View</span>
                             </Button>
                           </div>
@@ -2378,6 +2441,26 @@ export function WhatsAppFeatureView({
               </button>
             </div>
 
+            {/* Inactive / Checked Property Notice Banner */}
+            {inspectMessage.isActive === false && (
+              <div className="mt-3 px-3.5 py-2 rounded-xl bg-amber-500/10 border border-amber-500/25 flex items-center justify-between text-xs text-amber-800 dark:text-amber-300 shrink-0">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2Icon className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />
+                  <span>
+                    <strong>Checked Property:</strong> Marked as inactive and excluded from the Potential Matches algorithm.
+                  </span>
+                </div>
+                <Button
+                  variant="outline"
+                  size="xs"
+                  onClick={() => setConfirmToggleMessage(inspectMessage)}
+                  className="h-6 text-[11px] px-2.5 border-amber-500/40 hover:bg-amber-500/20 text-amber-900 dark:text-amber-200 font-medium"
+                >
+                  Reactivate
+                </Button>
+              </div>
+            )}
+
             {/* Extracted Details Grid */}
             <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 sm:gap-4 p-3.5 sm:p-4 bg-muted/35 rounded-xl border border-border/70 text-xs shrink-0 mt-4 shadow-2xs">
               <div>
@@ -2468,16 +2551,64 @@ export function WhatsAppFeatureView({
             </div>
 
             {/* Footer Actions */}
-            <div className="flex items-center justify-between pt-4 border-t border-border/70 shrink-0 mt-4">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => copyToClipboard(inspectMessage.messageText)}
-                className="text-xs h-9 px-3.5 gap-2 border-border/80 hover:bg-muted font-medium"
-              >
-                <CopyIcon className="h-3.5 w-3.5" />
-                <span>Copy Text</span>
-              </Button>
+            <div className="flex items-center justify-between pt-4 border-t border-border/70 shrink-0 mt-4 flex-wrap gap-2">
+              <div className="flex items-center gap-2.5">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => copyToClipboard(inspectMessage.messageText)}
+                  className="text-xs h-9 px-3.5 gap-2 border-border/80 hover:bg-muted font-medium"
+                >
+                  <CopyIcon className="h-3.5 w-3.5" />
+                  <span>Copy Text</span>
+                </Button>
+
+                {/* Status Toggle on right side of Copy Text */}
+                <button
+                  type="button"
+                  onClick={() => setConfirmToggleMessage(inspectMessage)}
+                  className={cn(
+                    "flex items-center gap-2.5 px-3 py-1 rounded-xl border cursor-pointer select-none transition-all shadow-2xs h-9",
+                    inspectMessage.isActive === false
+                      ? "bg-amber-500/15 border-amber-500/40 hover:bg-amber-500/20"
+                      : "bg-emerald-500/10 border-emerald-500/30 hover:bg-emerald-500/15",
+                  )}
+                  title={
+                    inspectMessage.isActive === false
+                      ? "Checked & Inactive (Excluded from matching). Click to reactivate."
+                      : "Active (Eligible for matching). Click to mark as Checked / Inactive."
+                  }
+                >
+                  <div className="text-left">
+                    <span
+                      className={cn(
+                        "text-[11px] font-bold block leading-tight",
+                        inspectMessage.isActive === false
+                          ? "text-amber-800 dark:text-amber-300"
+                          : "text-emerald-700 dark:text-emerald-400",
+                      )}
+                    >
+                      {inspectMessage.isActive === false ? "Checked / Inactive" : "Active Property"}
+                    </span>
+                    <span className="text-[9.5px] text-muted-foreground block -mt-0.5">
+                      {inspectMessage.isActive === false ? "Excluded from match" : "Eligible for match"}
+                    </span>
+                  </div>
+                  <div
+                    className={cn(
+                      "relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out",
+                      inspectMessage.isActive === false ? "bg-amber-600/70 dark:bg-amber-500/70" : "bg-emerald-600",
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out",
+                        inspectMessage.isActive === false ? "translate-x-0" : "translate-x-4",
+                      )}
+                    />
+                  </div>
+                </button>
+              </div>
 
               <div className="flex items-center gap-2">
                 <Button
@@ -2512,6 +2643,86 @@ export function WhatsAppFeatureView({
                   </Badge>
                 )}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* CONFIRMATION MODAL FOR TOGGLING ACTIVE / INACTIVE */}
+      {confirmToggleMessage && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/70 backdrop-blur-xs p-4 animate-in fade-in duration-150">
+          <div className="relative w-full max-w-md rounded-2xl bg-card p-6 shadow-2xl border border-border/90 flex flex-col gap-4">
+            <div className="flex items-start gap-3.5">
+              <div
+                className={cn(
+                  "h-10 w-10 rounded-full flex items-center justify-center shrink-0 border",
+                  confirmToggleMessage.isActive === false
+                    ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20"
+                    : "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20",
+                )}
+              >
+                {confirmToggleMessage.isActive === false ? (
+                  <CheckCircle2Icon className="h-5 w-5" />
+                ) : (
+                  <ShieldAlertIcon className="h-5 w-5" />
+                )}
+              </div>
+              <div className="flex-1 min-w-0">
+                <h3 className="text-base font-bold text-foreground">
+                  {confirmToggleMessage.isActive === false
+                    ? "Reactivate Property Inquiry?"
+                    : "Mark Property as Checked & Inactive?"}
+                </h3>
+                <p className="text-xs text-muted-foreground mt-1.5 leading-relaxed">
+                  {confirmToggleMessage.isActive === false ? (
+                    <>
+                      This will reactivate <strong>{confirmToggleMessage.senderName}</strong>&apos;s property inquiry. It will immediately be included in the <strong>Potential Matches</strong> algorithm again.
+                    </>
+                  ) : (
+                    <>
+                      Are you sure you want to mark this property as checked? It will be marked as <strong>Inactive</strong> and excluded from the <strong>Potential Matches</strong> algorithm so it won&apos;t match with any other properties.
+                    </>
+                  )}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-border/70 mt-1">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setConfirmToggleMessage(null)}
+                className="text-xs h-9 px-3.5"
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="default"
+                size="sm"
+                onClick={async () => {
+                  const target = confirmToggleMessage;
+                  setConfirmToggleMessage(null);
+                  await handleToggleActive(target);
+                }}
+                className={cn(
+                  "text-xs h-9 px-4 font-semibold shadow-2xs gap-1.5",
+                  confirmToggleMessage.isActive === false
+                    ? "bg-emerald-600 hover:bg-emerald-700 text-white"
+                    : "bg-amber-600 hover:bg-amber-700 text-white",
+                )}
+              >
+                {confirmToggleMessage.isActive === false ? (
+                  <>
+                    <CheckCircle2Icon className="h-3.5 w-3.5" />
+                    <span>Confirm Reactivation</span>
+                  </>
+                ) : (
+                  <>
+                    <ShieldAlertIcon className="h-3.5 w-3.5" />
+                    <span>Confirm & Mark Inactive</span>
+                  </>
+                )}
+              </Button>
             </div>
           </div>
         </div>
