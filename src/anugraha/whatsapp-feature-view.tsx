@@ -271,12 +271,11 @@ export function WhatsAppFeatureView({
     }
   }
 
-  // Navigation View: "feed" (Live Inquiries Stream), "matches" (Potential Property Matches Table), or "settings"
-  const [activeView, setActiveView] = React.useState<"feed" | "matches" | "settings">("feed");
+  // Navigation view: inquiry categories, Potential Matches, Your Leads, or Settings.
+  const [activeView, setActiveView] = React.useState<"feed" | "matches" | "leads" | "settings">("feed");
 
   // Potential Property Matches State (Calculated by Script Matcher)
   const [inspectMatch, setInspectMatch] = React.useState<AILeadMatch | null>(null);
-  const [matchSearchQuery, setMatchSearchQuery] = React.useState<string>("");
 
   // Real WhatsApp Session State
   const [sessionStatus, setSessionStatus] = React.useState<
@@ -300,6 +299,18 @@ export function WhatsAppFeatureView({
 
   // Feed State
   const [messages, setMessages] = React.useState<CapturedWhatsAppMessage[]>([]);
+  const [serverSearchResults, setServerSearchResults] = React.useState<{
+    query: string;
+    codePrefix: string;
+    items: CapturedWhatsAppMessage[];
+  } | null>(null);
+  const searchRequestSequenceRef = React.useRef(0);
+  const messagesRef = React.useRef<CapturedWhatsAppMessage[]>([]);
+  const lastFetchedMessageTimestampRef = React.useRef<number | null>(null);
+  const todayMessagesCount = React.useMemo(
+    () => messages.filter((message) => message.isToday !== false).length,
+    [messages],
+  );
   const [potentialMatches, setPotentialMatches] = React.useState<AILeadMatch[]>([]);
   const [isScraping, setIsScraping] = React.useState(false);
   const [lastFetchedAt, setLastFetchedAt] = React.useState<string>(() =>
@@ -307,6 +318,7 @@ export function WhatsAppFeatureView({
   );
   const [cycleLabel, setCycleLabel] = React.useState<string>("Hourly 9 AM–8 PM");
   const [nextBatchSlot, setNextBatchSlot] = React.useState<string>(getNextHourlySlotLabel);
+  const [activeCodeFilter, setActiveCodeFilter] = React.useState<"AR" | "AS" | "WR" | "WB">("AR");
   const [activeIntentFilter, setActiveIntentFilter] = React.useState<PropertyIntent | "all">("all");
   const [selectedGroupFilter, setSelectedGroupFilter] = React.useState<string>("all");
   const [searchInput, setSearchInput] = React.useState("");
@@ -315,7 +327,7 @@ export function WhatsAppFeatureView({
   React.useEffect(() => {
     const handler = setTimeout(() => {
       setDebouncedSearch(searchInput);
-    }, 300);
+    }, 1000);
 
     return () => {
       clearTimeout(handler);
@@ -328,15 +340,16 @@ export function WhatsAppFeatureView({
 
   React.useEffect(() => {
     setFeedPage(1);
-  }, [debouncedSearch, activeIntentFilter, selectedGroupFilter]);
+  }, [debouncedSearch, activeCodeFilter, selectedGroupFilter]);
 
   React.useEffect(() => {
     setMatchesPage(1);
-  }, [matchSearchQuery]);
+  }, [debouncedSearch]);
 
   // Inspect message detail modal
   const [inspectMessage, setInspectMessage] = React.useState<CapturedWhatsAppMessage | null>(null);
   const [confirmToggleMessage, setConfirmToggleMessage] = React.useState<CapturedWhatsAppMessage | null>(null);
+  const [isConvertingToLead, setIsConvertingToLead] = React.useState(false);
 
   // Today's Formatted Date String
   const todayLabel = React.useMemo(() => {
@@ -442,14 +455,18 @@ export function WhatsAppFeatureView({
     }
   }
 
-  // Fetch / Scrape today's messages from API
+  // Read newly persisted messages; this endpoint owns WhatsApp ingestion and
+  // is used for initial, scheduled-cache, and manual refreshes only.
   const fetchMessagesFromAPI = React.useCallback(
     async (silent = false, refreshBackend = false) => {
       try {
         if (!silent) setIsScraping(true);
-        const endpoint = refreshBackend
-          ? "/api/whatsapp-capture?today=true"
-          : "/api/whatsapp-capture?today=true&cached=true";
+        const params = new URLSearchParams({ today: "false" });
+        if (!refreshBackend) params.set("cached", "true");
+        if (lastFetchedMessageTimestampRef.current !== null) {
+          params.set("since", String(lastFetchedMessageTimestampRef.current));
+        }
+        const endpoint = `/api/whatsapp-capture?${params.toString()}`;
         const res = await fetch(endpoint);
         const json = await res.json();
         if (json.success && json.data) {
@@ -478,6 +495,8 @@ export function WhatsAppFeatureView({
               price_note?: string;
               project_name?: string;
               is_active?: boolean;
+              convertedToLead?: boolean;
+              converted_to_lead?: boolean;
             }) => ({
               id: item.id,
               senderName: item.sender_name,
@@ -501,33 +520,46 @@ export function WhatsAppFeatureView({
               priceNote: item.price_note,
               projectName: item.project_name,
               isActive: item.is_active !== false,
+              convertedToLead: item.convertedToLead === true || item.converted_to_lead === true,
             }),
           );
-
-          // Deduplicate feed: if all 5 fields are same (intent, config, budget/price, project name, location),
-          // keep the latest one and remove the earlier duplicate.
           const deduplicated = deduplicateCapturedMessages(mapped);
 
-          // The backend returns the full today's feed. Re-run matching across
-          // active properties whenever a fresh snapshot arrives, not just new rows.
-          setPotentialMatches(
-            runPotentialMatchScript(deduplicated.filter((message) => message.isToday !== false && message.isActive !== false)),
+          const currentById = new Map(messagesRef.current.map((message) => [message.id, message]));
+          let newCount = 0;
+          for (const message of deduplicated) {
+            const existing = currentById.get(message.id);
+            if (!existing) newCount++;
+            currentById.set(message.id, {
+              ...existing,
+              ...message,
+              convertedToLead: message.convertedToLead || existing?.convertedToLead,
+            });
+          }
+          const merged = deduplicateCapturedMessages([...currentById.values()]).sort(
+            (a, b) => (b.rawTimestamp || 0) - (a.rawTimestamp || 0),
           );
-
-          setMessages((prev) => {
-            const existingIds = new Set(prev.map((m) => m.id));
-            const newItems = deduplicated.filter((m) => !existingIds.has(m.id));
-            if (newItems.length > 0) {
-              toast.success(`Captured ${newItems.length} new WhatsApp inquiries`);
-            } else if (!silent) {
-              toast.info("WhatsApp inquiries feed up to date.");
-            }
-            const convertedIds = new Set(prev.filter((m) => m.convertedToLead).map((m) => m.id));
-            return deduplicated.map((m) => ({
-              ...m,
-              convertedToLead: m.convertedToLead || convertedIds.has(m.id),
-            }));
-          });
+          messagesRef.current = merged;
+          setMessages(merged);
+          // Recalculate matches against the complete local history while the
+          // feed itself receives only the incremental API response.
+          setPotentialMatches(
+            runPotentialMatchScript(merged.filter((message) => message.isToday !== false && message.isActive !== false)),
+          );
+          if (newCount > 0) {
+            toast.success(`Captured ${newCount} new WhatsApp inquiries`);
+          } else if (!silent) {
+            toast.info("WhatsApp inquiries feed up to date.");
+          }
+          const latestTimestamp = merged.reduce<number | null>(
+            (latest, message) => message.rawTimestamp !== undefined
+              ? Math.max(latest ?? 0, message.rawTimestamp)
+              : latest,
+            null,
+          );
+          if (latestTimestamp !== null) {
+            lastFetchedMessageTimestampRef.current = latestTimestamp;
+          }
           if (json.data.fetchedAt) {
             setLastFetchedAt(
               new Date(json.data.fetchedAt).toLocaleTimeString([], {
@@ -565,6 +597,101 @@ export function WhatsAppFeatureView({
     },
     [],
   );
+
+  // Search persisted rows directly. This endpoint never touches the WhatsApp
+  // session, group discovery, or message ingestion route.
+  const fetchDatabaseSearch = React.useCallback(async (searchQuery: string, codePrefix = "") => {
+    const query = searchQuery.trim();
+    if (!query) return;
+
+    const requestSequence = ++searchRequestSequenceRef.current;
+    const params = new URLSearchParams({ search: query });
+    if (codePrefix) params.set("codePrefix", codePrefix);
+
+    try {
+      const response = await fetch(`/api/whatsapp-capture/search?${params.toString()}`, {
+        cache: "no-store",
+      });
+      const json = await response.json();
+      if (!response.ok || !json.success || !json.data) {
+        throw new Error(json.error || "Database search failed");
+      }
+
+      const items: CapturedWhatsAppMessage[] = (json.data.items || []).map((item: {
+        id: string;
+        sender_name: string;
+        sender_phone: string;
+        group_id: string;
+        group_name: string;
+        message_text: string;
+        intent: PropertyIntent;
+        confidence: number;
+        configuration?: string;
+        budget_or_price?: string;
+        location?: string;
+        tags?: string[];
+        timestamp: string;
+        raw_timestamp?: number;
+        is_today?: boolean;
+        code?: string;
+        property_type?: string;
+        deal_type?: string;
+        size_display?: string;
+        price_note?: string;
+        project_name?: string;
+        is_active?: boolean;
+        convertedToLead?: boolean;
+        converted_to_lead?: boolean;
+      }) => ({
+        id: item.id,
+        senderName: item.sender_name,
+        senderPhone: item.sender_phone,
+        groupId: item.group_id,
+        groupName: item.group_name,
+        messageText: item.message_text || "",
+        intent: item.intent,
+        confidence: item.confidence,
+        configuration: item.configuration,
+        budgetOrPrice: item.budget_or_price,
+        location: item.location,
+        tags: item.tags || [],
+        timestamp: item.timestamp,
+        rawTimestamp: item.raw_timestamp,
+        isToday: item.is_today,
+        code: item.code,
+        propertyType: item.property_type,
+        dealType: item.deal_type,
+        sizeDisplay: item.size_display,
+        priceNote: item.price_note,
+        projectName: item.project_name,
+        isActive: item.is_active !== false,
+        convertedToLead: item.convertedToLead === true || item.converted_to_lead === true,
+      }));
+
+      if (requestSequence === searchRequestSequenceRef.current) {
+        setServerSearchResults({
+          query,
+          codePrefix,
+          items: deduplicateCapturedMessages(items),
+        });
+      }
+    } catch (error) {
+      if (requestSequence === searchRequestSequenceRef.current) {
+        setServerSearchResults({ query, codePrefix, items: [] });
+        toast.error(error instanceof Error ? error.message : "Database search failed");
+      }
+    }
+  }, []);
+
+  const handleManualFetch = React.useCallback(async () => {
+    await fetchMessagesFromAPI(false, true);
+    if (debouncedSearch.trim()) {
+      await fetchDatabaseSearch(
+        debouncedSearch,
+        activeView === "feed" ? activeCodeFilter : "",
+      );
+    }
+  }, [activeCodeFilter, activeView, debouncedSearch, fetchDatabaseSearch, fetchMessagesFromAPI]);
 
   const handleRefreshGroups = React.useCallback(async () => {
     setIsLoadingGroups(true);
@@ -636,6 +763,19 @@ export function WhatsAppFeatureView({
     }
   }, [fetchMessagesFromAPI, sessionStatus]);
 
+  // Debounce global search requests and search persisted inquiries via API.
+  // Feed category tabs pass their code; Matches searches across all categories.
+  React.useEffect(() => {
+    if (!debouncedSearch.trim()) {
+      return;
+    }
+    if (sessionStatus !== "connected" || activeView === "settings") return;
+    fetchDatabaseSearch(
+      debouncedSearch,
+      activeView === "feed" ? activeCodeFilter : "",
+    );
+  }, [activeCodeFilter, activeView, debouncedSearch, fetchDatabaseSearch, sessionStatus]);
+
   // Keep the displayed next-run time current
   React.useEffect(() => {
     const updateNextSlot = () => {
@@ -646,44 +786,19 @@ export function WhatsAppFeatureView({
     return () => clearInterval(displayTimer);
   }, []);
 
-  // Automated scheduled fetch every one hour starting from 9 AM to 8 PM
-  const lastAutoFetchedHourRef = React.useRef<string>("");
-
+  // Refresh the persisted feed periodically; WhatsApp ingestion itself is
+  // handled by the hourly backend cron, so avoid a database read every minute.
   React.useEffect(() => {
-    if (sessionStatus !== "connected") return;
-
-    const checkAndTriggerHourlyFetch = () => {
-      const now = new Date();
-      const currentHour = now.getHours();
-
-      // Window: every hour starting from 9 AM to 8 PM (9:00 to 20:00)
-      if (currentHour >= 9 && currentHour <= 20) {
-        const hourKey = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}-h${currentHour}`;
-        // At the top of each hour (minutes 0-5), fetch automatically once
-        if (now.getMinutes() <= 5 && lastAutoFetchedHourRef.current !== hourKey) {
-          lastAutoFetchedHourRef.current = hourKey;
-          fetchMessagesFromAPI(true, true);
-          toast.info(
-            `Triggered scheduled hourly WhatsApp inquiries fetch (${now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}).`,
-          );
-        }
-      }
-    };
-
-    checkAndTriggerHourlyFetch();
-    const scheduleInterval = setInterval(checkAndTriggerHourlyFetch, 10 * 1000);
-    return () => clearInterval(scheduleInterval);
-  }, [fetchMessagesFromAPI, sessionStatus]);
-
-  // Read the latest backend snapshot periodically. The backend cron owns
-  // WhatsApp processing; this request only retrieves the persisted snapshot.
-  React.useEffect(() => {
-    if (sessionStatus !== "connected") return;
+    if (sessionStatus !== "connected" || activeView === "settings") return;
     const cachePoll = setInterval(() => {
-      fetchMessagesFromAPI(true, false);
-    }, 60 * 1000);
+      if (debouncedSearch.trim()) {
+        fetchDatabaseSearch(debouncedSearch, activeView === "feed" ? activeCodeFilter : "");
+      } else {
+        fetchMessagesFromAPI(true, false);
+      }
+    }, 5 * 60 * 1000);
     return () => clearInterval(cachePoll);
-  }, [fetchMessagesFromAPI, sessionStatus]);
+  }, [activeCodeFilter, activeView, debouncedSearch, fetchDatabaseSearch, fetchMessagesFromAPI, sessionStatus]);
 
   // Sync fresh groups from connected WhatsApp when opening Settings
   React.useEffect(() => {
@@ -728,12 +843,23 @@ export function WhatsAppFeatureView({
 
   // Filter messages
   const filteredMessages = React.useMemo(() => {
-    return messages.filter((m) => {
-      if (activeIntentFilter !== "all") {
-        if (activeIntentFilter === "buy" && !(m.intent === "buy" || m.code?.startsWith("WB"))) return false;
-        if (activeIntentFilter === "sell" && !(m.intent === "sell" || m.code?.startsWith("AS"))) return false;
-        if (activeIntentFilter === "rent" && !(m.intent === "rent" || m.code?.startsWith("AR") || m.code?.startsWith("WR"))) return false;
-        if (activeIntentFilter === "lease" && !(m.intent === "lease" || m.code?.startsWith("AR") || m.code?.startsWith("WR"))) return false;
+    const query = debouncedSearch.trim();
+    const expectedSearchCodePrefix = activeView === "feed" ? activeCodeFilter : "";
+    const hasCurrentServerResults = Boolean(
+      query &&
+      serverSearchResults?.query === query &&
+      serverSearchResults.codePrefix === expectedSearchCodePrefix,
+    );
+    const sourceMessages = query
+      ? hasCurrentServerResults ? serverSearchResults?.items ?? [] : []
+      : messages;
+
+    return sourceMessages.filter((m) => {
+      if (activeView === "leads") {
+        if (!m.convertedToLead) return false;
+      } else {
+        if (m.convertedToLead) return false;
+        if (activeView === "feed" && !m.code?.startsWith(activeCodeFilter)) return false;
       }
       if (
         selectedGroupFilter !== "all" &&
@@ -742,8 +868,8 @@ export function WhatsAppFeatureView({
       ) {
         return false;
       }
-      if (!debouncedSearch.trim()) return true;
-      const q = debouncedSearch.toLowerCase().trim();
+      if (!query) return true;
+      const q = query.toLowerCase();
       return (
         (m.projectName && m.projectName.toLowerCase().includes(q)) ||
         m.messageText.toLowerCase().includes(q) ||
@@ -752,10 +878,15 @@ export function WhatsAppFeatureView({
         m.groupName.toLowerCase().includes(q) ||
         (m.location && m.location.toLowerCase().includes(q)) ||
         (m.configuration && m.configuration.toLowerCase().includes(q)) ||
+        (m.budgetOrPrice && m.budgetOrPrice.toLowerCase().includes(q)) ||
+        (m.sizeDisplay && m.sizeDisplay.toLowerCase().includes(q)) ||
+        (m.propertyType && m.propertyType.toLowerCase().includes(q)) ||
+        (m.dealType && m.dealType.toLowerCase().includes(q)) ||
+        m.tags.some((tag) => tag.toLowerCase().includes(q)) ||
         (m.code && m.code.toLowerCase().includes(q))
       );
     });
-  }, [messages, activeIntentFilter, selectedGroupFilter, debouncedSearch]);
+  }, [messages, activeCodeFilter, activeView, selectedGroupFilter, debouncedSearch, serverSearchResults]);
 
   // Intent breakdown counts
   const intentCounts = React.useMemo(() => {
@@ -777,14 +908,46 @@ export function WhatsAppFeatureView({
     return counts;
   }, [messages]);
 
+  const codeCounts = React.useMemo(() => ({
+    AR: messages.filter((message) => !message.convertedToLead && message.code?.startsWith("AR")).length,
+    AS: messages.filter((message) => !message.convertedToLead && message.code?.startsWith("AS")).length,
+    WR: messages.filter((message) => !message.convertedToLead && message.code?.startsWith("WR")).length,
+    WB: messages.filter((message) => !message.convertedToLead && message.code?.startsWith("WB")).length,
+  }), [messages]);
+  const convertedLeadCount = React.useMemo(
+    () => messages.filter((message) => message.convertedToLead).length,
+    [messages],
+  );
+
   // Convert to Lead
-  function handleConvertToLead(msg: CapturedWhatsAppMessage) {
-    setMessages((prev) =>
-      prev.map((m) => (m.id === msg.id ? { ...m, convertedToLead: true } : m)),
-    );
-    toast.success(
-      `Lead created for ${msg.senderName} (${msg.intent.toUpperCase()} · ${msg.configuration || "Property"}) in Skelo CRM!`,
-    );
+  async function handleConvertToLead(msg: CapturedWhatsAppMessage) {
+    setIsConvertingToLead(true);
+    try {
+      const response = await fetch("/api/whatsapp-capture", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "convert_to_lead", messageId: msg.id }),
+      });
+      const result = await response.json();
+      if (!response.ok || !result.success) {
+        throw new Error(result.error || "Failed to move inquiry to Your Leads");
+      }
+
+      setMessages((previous) => {
+        const updated = previous.map((message) =>
+          message.id === msg.id ? { ...message, convertedToLead: true } : message,
+        );
+        messagesRef.current = updated;
+        return updated;
+      });
+      setInspectMessage(null);
+      setActiveView("leads");
+      toast.success(`${msg.senderName} was moved to Your Leads.`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to move inquiry to Your Leads.");
+    } finally {
+      setIsConvertingToLead(false);
+    }
   }
 
   // Toggle Property Active / Inactive status (Checked)
@@ -794,6 +957,7 @@ export function WhatsAppFeatureView({
     // Optimistic UI state update
     setMessages((prev) => {
       const updated = prev.map((m) => (m.id === msg.id ? { ...m, isActive: nextActive } : m));
+      messagesRef.current = updated;
       // Re-run potential matchmaking excluding inactive properties
       setPotentialMatches(
         runPotentialMatchScript(updated.filter((m) => m.isToday !== false && m.isActive !== false)),
@@ -832,12 +996,23 @@ export function WhatsAppFeatureView({
 
   // Filtered Potential Matches for the table
   const filteredMatches = React.useMemo(() => {
-    if (!matchSearchQuery.trim()) return potentialMatches;
-    const q = matchSearchQuery.toLowerCase();
+    if (!debouncedSearch.trim()) return potentialMatches;
+    const q = debouncedSearch.toLowerCase().trim();
+    const backendSearchIds = new Set(
+      serverSearchResults?.query === debouncedSearch.trim() && !serverSearchResults.codePrefix
+        ? serverSearchResults.items.map((message) => message.id)
+        : [],
+    );
     return potentialMatches.filter((match) => {
       return (
+        backendSearchIds.has(match.demandLeadId) ||
+        backendSearchIds.has(match.supplyLeadId) ||
         (match.demandProject && match.demandProject.toLowerCase().includes(q)) ||
         (match.supplyProject && match.supplyProject.toLowerCase().includes(q)) ||
+        (match.demandBudget && match.demandBudget.toLowerCase().includes(q)) ||
+        (match.supplyPrice && match.supplyPrice.toLowerCase().includes(q)) ||
+        (match.demandConfig && match.demandConfig.toLowerCase().includes(q)) ||
+        (match.supplyConfig && match.supplyConfig.toLowerCase().includes(q)) ||
         match.demandContact.name.toLowerCase().includes(q) ||
         match.demandContact.phone.toLowerCase().includes(q) ||
         (match.demandContact.location && match.demandContact.location.toLowerCase().includes(q)) ||
@@ -849,7 +1024,7 @@ export function WhatsAppFeatureView({
         match.matchReason.toLowerCase().includes(q)
       );
     });
-  }, [potentialMatches, matchSearchQuery]);
+  }, [potentialMatches, debouncedSearch, serverSearchResults]);
 
   const PAGE_SIZE = 20;
 
@@ -1057,122 +1232,143 @@ export function WhatsAppFeatureView({
   // MAIN VIEW: ONCE CONNECTED (TABLE & SETTINGS)
   // ===========================================================================
   return (
-    <div className="space-y-6 pb-16">
-      <div className="flex items-center justify-between">
-        <Logo href="" />
-        {userEmail && (
-          <span className="text-xs text-muted-foreground font-mono hidden sm:inline-block">
-            {userEmail}
-          </span>
-        )}
-      </div>
-      {/* 1. TOP HEADER & MAIN NAVIGATION TABS */}
-      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between border-b border-border/70 pb-4">
-        <div>
-          <div className="flex items-center gap-2.5">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 ring-1 ring-emerald-500/20">
-              <WhatsAppIcon className="h-5 w-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-xl font-bold tracking-tight text-foreground font-heading">
-                  WhatsApp Lead Capture
-                </h1>
-                <Badge
-                  variant="outline"
-                  className="border-muted text-muted-foreground text-[11px] font-normal"
-                >
-                  Read-Only Mode
-                </Badge>
-              </div>
-            </div>
+    <div className="-mx-4 -mt-6 space-y-0 pb-16 md:-mx-8 md:-mt-8">
+      <header className="bg-[#002f32] text-white shadow-sm">
+        <div className="flex min-h-[76px] items-center justify-between gap-4 border-b border-white/10 px-4 py-3 md:px-8">
+          <div className="flex min-w-0 items-center gap-4 md:gap-6">
+            <Logo href="" tone="sidebar" className="shrink-0" />
+            <span className="rounded-full bg-gradient-to-r from-[#dcff37] to-[#8af0bc] px-4 py-2 text-[11px] font-black tracking-[0.12em] text-[#002f32] sm:text-xs">
+              WHATSAPP LEAD MATCHER
+            </span>
           </div>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Scrapes today&apos;s real estate inquiries from your permitted WhatsApp groups.
-          </p>
-        </div>
-
-        {/* View Switcher: Live Feed vs AI Matcher vs Settings */}
-        <div className="flex items-center gap-2">
-          <div className="flex items-center bg-muted/50 p-1 rounded-lg border border-border/70 shadow-2xs">
-            <button
-              onClick={() => setActiveView("feed")}
-              className={cn(
-                "px-3.5 py-1.5 rounded-md text-xs font-medium transition-all flex items-center gap-1.5",
-                activeView === "feed"
-                  ? "bg-background text-foreground shadow-2xs font-semibold"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
+          <div className="flex shrink-0 items-center gap-2 sm:gap-3 md:gap-4">
+            <span className="hidden items-center gap-2 text-sm text-white/75 sm:flex" title={userEmail}>
+              <span className="size-2.5 rounded-full bg-emerald-400 shadow-[0_0_12px_rgba(74,222,128,0.65)]" />
+              Listening to {confirmedGroupIds.length} groups
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleManualFetch}
+              disabled={isScraping}
+              className="h-8.5 gap-1.5 rounded-lg border-white/20 bg-white/10 px-3 text-xs font-semibold text-white shadow-2xs transition-colors hover:bg-white/20 hover:text-white disabled:opacity-50"
+              title="Manually fetch today's WhatsApp inquiries"
             >
-              <TableIcon className="h-3.5 w-3.5 text-blue-500" />
-              <span>Inquiries Feed</span>
-              <span className="rounded-full bg-muted px-1.5 py-0.2 text-[10px] text-muted-foreground font-mono">
-                {messages.length}
-              </span>
-            </button>
-
-            <button
-              onClick={() => setActiveView("matches")}
-              className={cn(
-                "px-3.5 py-1.5 rounded-md text-xs font-medium transition-all flex items-center gap-1.5",
-                activeView === "matches"
-                  ? "bg-background text-foreground shadow-2xs font-semibold"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              <ArrowRightLeftIcon className="h-3.5 w-3.5 text-rose-500" />
-              <span>Potential Matches</span>
-              <span
-                className={cn(
-                  "rounded-full px-1.5 py-0.2 text-[10px] font-mono",
-                  potentialMatches.length > 0
-                    ? "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300 font-bold"
-                    : "bg-muted text-muted-foreground",
-                )}
-              >
-                {potentialMatches.length}
-              </span>
-            </button>
-
+              <RefreshCwIcon className={cn("size-3.5 shrink-0", isScraping && "animate-spin")} />
+              <span>{isScraping ? "Fetching..." : "Fetch Today's Inquiries"}</span>
+            </Button>
             <button
               onClick={() => {
                 setSelectedGroupIds([...confirmedGroupIds]);
                 setActiveView("settings");
               }}
-              className={cn(
-                "px-3.5 py-1.5 rounded-md text-xs font-medium transition-all flex items-center gap-1.5",
-                activeView === "settings"
-                  ? "bg-background text-foreground shadow-2xs font-semibold"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
+              className={cn("rounded-lg p-2 transition-colors hover:bg-white/10", activeView === "settings" && "bg-white/10 text-lime-300")}
+              aria-label="Settings"
+              title="Settings"
             >
-              <SettingsIcon className="h-3.5 w-3.5 text-emerald-600" />
-              <span>Settings</span>
-              <span className="rounded-full bg-muted px-1.5 py-0.2 text-[10px] text-muted-foreground font-mono">
-                {confirmedGroupIds.length} groups
-              </span>
+              <SettingsIcon className="size-5" />
+            </button>
+            <button
+              onClick={handleLogout}
+              disabled={isLoggingOut}
+              className="rounded-lg p-2 text-white/70 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-50"
+              aria-label={isLoggingOut ? "Logging out" : "Log out"}
+              title="Log out of Skelo"
+            >
+              <LogOutIcon className="size-5" />
             </button>
           </div>
-
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleLogout}
-            disabled={isLoggingOut}
-            className="h-9 px-3 text-xs gap-1.5 text-muted-foreground hover:text-destructive hover:border-destructive/40 hover:bg-destructive/10 border-border/70 transition-colors shadow-2xs cursor-pointer"
-            title="Log out of Skelo"
-          >
-            <LogOutIcon className="h-3.5 w-3.5" />
-            <span>{isLoggingOut ? "Logging out..." : "Log out"}</span>
-          </Button>
         </div>
-      </div>
+        <nav className="no-scrollbar flex flex-wrap items-end gap-1 px-4 pt-1 md:px-8" aria-label="Inquiry categories">
+          {([
+            { code: "AR", title: "Available for rent", count: codeCounts.AR },
+            { code: "AS", title: "Available for sale", count: codeCounts.AS },
+            { code: "WR", title: "Wants to rent", count: codeCounts.WR },
+            { code: "WB", title: "Wants to buy", count: codeCounts.WB },
+          ] as const).map((tab) => {
+            const selected = activeView === "feed" && activeCodeFilter === tab.code;
+            return (
+              <button
+                key={tab.code}
+                onClick={() => {
+                  setActiveCodeFilter(tab.code);
+                  setActiveView("feed");
+                }}
+                className={cn(
+                  "flex shrink-0 items-center gap-2.5 rounded-t-xl px-4 py-3 text-sm transition-colors md:px-5",
+                  selected ? "bg-[#fbfcfa] text-[#00363a]" : "text-white/65 hover:bg-white/5 hover:text-white",
+                )}
+              >
+                <span className="font-black tracking-wide">{tab.code}</span>
+                <span className="hidden md:inline">{tab.title}</span>
+                <span className={cn("rounded-full px-2 py-0.5 text-xs font-bold", selected ? "bg-[#e0ff38] text-[#00363a]" : "bg-white/10 text-white/70")}>
+                  {tab.count}
+                </span>
+              </button>
+            );
+          })}
+          <button
+            onClick={() => setActiveView("matches")}
+            className={cn(
+              "flex shrink-0 items-center gap-2.5 rounded-t-xl px-4 py-3 text-sm transition-colors md:px-5",
+              activeView === "matches" ? "bg-[#fbfcfa] text-[#00363a]" : "text-white/65 hover:bg-white/5 hover:text-white",
+            )}
+          >
+            <span className="font-black tracking-wide">MATCHED</span>
+            <span className="hidden md:inline">Matches</span>
+            <span className={cn("rounded-full px-2 py-0.5 text-xs font-bold", activeView === "matches" ? "bg-[#e0ff38] text-[#00363a]" : "bg-white/10 text-white/70")}>
+              {potentialMatches.length}
+            </span>
+          </button>
+          <button
+            onClick={() => setActiveView("leads")}
+            className={cn(
+              "flex shrink-0 items-center gap-2.5 rounded-t-xl px-4 py-3 text-sm transition-colors md:px-5",
+              activeView === "leads" ? "bg-[#fbfcfa] text-[#00363a]" : "text-white/65 hover:bg-white/5 hover:text-white",
+            )}
+          >
+            <span className="font-black tracking-wide">LEADS</span>
+            <span className="hidden md:inline">Your Leads</span>
+            <span className={cn(
+              "rounded-full px-2 py-0.5 text-xs font-bold",
+              activeView === "leads" ? "bg-[#e0ff38] text-[#00363a]" : "bg-white/10 text-white/70",
+            )}>
+              {convertedLeadCount}
+            </span>
+          </button>
+          {activeView !== "settings" && (
+            <div className="relative ml-auto flex w-full shrink-0 items-center py-2 sm:w-[min(24rem,40vw)] sm:pl-3">
+              <SearchIcon className="pointer-events-none absolute left-6 top-1/2 h-4 w-4 -translate-y-1/2 text-[#789497]" />
+              <Input
+                value={searchInput}
+                onChange={(event) => setSearchInput(event.target.value)}
+                placeholder="Search property, contact, locality, or BHK..."
+                aria-label="Search inquiries and matches"
+                className="h-10 rounded-xl border-[#dce7e6] bg-white pl-10 pr-9 text-sm text-[#12383b] shadow-none placeholder:text-[#789497] focus-visible:ring-[#85dbaa]"
+              />
+              {searchInput && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSearchInput("");
+                    setDebouncedSearch("");
+                  }}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded p-1 text-[#789497] transition-colors hover:bg-[#eef5f2] hover:text-[#12383b]"
+                  aria-label="Clear search"
+                >
+                  <XIcon className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+          )}
+        </nav>
+      </header>
 
       {/* ========================================================================= */}
       {/* VIEW A: SETTINGS VIEW (Choose Groups, Manage WhatsApp Connection)          */}
       {/* ========================================================================= */}
       {activeView === "settings" && (
-        <div className="space-y-6 animate-in fade-in-50 duration-200">
+        <div className="space-y-6 bg-[#fbfcfa] px-4 py-7 md:px-8 animate-in fade-in-50 duration-200">
           <div className="flex items-center justify-between pb-2">
             <div>
               <h2 className="text-base font-semibold text-foreground font-heading">
@@ -1575,10 +1771,10 @@ export function WhatsAppFeatureView({
       {/* ========================================================================= */}
       {/* VIEW B: INQUIRIES FEED (TABLE VIEW AS DEFAULT)                            */}
       {/* ========================================================================= */}
-      {activeView === "feed" && (
-        <div className="space-y-6 animate-in fade-in-50 duration-200">
+      {(activeView === "feed" || activeView === "leads") && (
+        <div className="space-y-6 bg-[#fbfcfa] px-4 py-7 md:px-8 animate-in fade-in-50 duration-200">
           {/* 2. STATS & METRICS RIBBON */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3.5">
+          <div className="hidden grid-cols-2 md:grid-cols-4 gap-3.5">
             <Card className="p-4 border-border/70 shadow-2xs bg-card/60 backdrop-blur-xs">
               <div className="flex items-center justify-between text-muted-foreground">
                 <span className="text-[11px] font-medium uppercase tracking-wider">
@@ -1588,7 +1784,7 @@ export function WhatsAppFeatureView({
               </div>
               <div className="mt-2 flex items-baseline gap-2">
                 <span className="text-2xl font-bold tracking-tight text-foreground font-heading">
-                  {messages.length}
+                  {todayMessagesCount}
                 </span>
                 <span className="text-[11px] text-muted-foreground">
                   inquiries captured
@@ -1671,7 +1867,7 @@ export function WhatsAppFeatureView({
           </div>
 
           {/* 3. INTENT TABS & SEARCH CONTROLS */}
-          <div className="space-y-3">
+          <div className="hidden space-y-3">
             <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
               {/* Segmented Filter Pills */}
               <div className="flex flex-wrap items-center gap-1 p-1 bg-muted/40 rounded-lg border border-border/70">
@@ -1767,51 +1963,44 @@ export function WhatsAppFeatureView({
             </button>
           </div>
 
-          {/* Search */}
-          <div className="flex flex-wrap items-center gap-2.5">
-            <div className="relative w-full sm:w-80 md:w-96">
-              <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
-              <Input
-                placeholder="Search by a property name"
-                value={searchInput}
-                onChange={(e) => setSearchInput(e.target.value)}
-                className="pl-9 pr-8 h-9 text-xs bg-card border-border/80 shadow-2xs rounded-lg transition-all focus-visible:ring-1 focus-visible:ring-foreground/20 placeholder:text-muted-foreground"
-              />
-              {searchInput && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSearchInput("");
-                    setDebouncedSearch("");
-                  }}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 p-0.5 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-                  aria-label="Clear search"
-                >
-                  <XIcon className="h-3.5 w-3.5" />
-                </button>
+        </div>
+
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h2 className="flex items-baseline gap-3 text-2xl font-bold tracking-tight text-[#07363a]">
+              {activeView === "leads" ? (
+                <span>Your Leads</span>
+              ) : (
+                <>
+                  <span>{activeCodeFilter}</span>
+                  <span className="text-lg font-medium text-[#708f91]">
+                    {{ AR: "Available for rent", AS: "Available for sale", WR: "Wants to rent", WB: "Wants to buy" }[activeCodeFilter]}
+                  </span>
+                </>
               )}
-            </div>
+            </h2>
           </div>
         </div>
 
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-muted-foreground px-1">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-[#789497] px-1">
           <span>
             Showing <strong>{filteredMessages.length}</strong> of{" "}
-            <strong>{messages.length}</strong> messages from today
+            <strong>{activeView === "leads" ? convertedLeadCount : codeCounts[activeCodeFilter]}</strong>{" "}
+            {activeView === "leads" ? "leads" : "stored inquiries"}
           </span>
           <div className="flex items-center gap-2.5">
             {lastFetchedAt && (
               <span className="flex items-center gap-1.5 text-muted-foreground font-medium">
                 <ClockIcon className="h-3.5 w-3.5 text-emerald-600" />
-                <span>Fetched today at {lastFetchedAt}</span>
+                <span>Last synced at {lastFetchedAt}</span>
               </span>
             )}
             <Button
               variant="default"
               size="sm"
-              onClick={() => fetchMessagesFromAPI(false, true)}
+              onClick={handleManualFetch}
               disabled={isScraping}
-              className="gap-1.5 text-xs h-7.5 bg-foreground text-background hover:bg-foreground/90 shadow-2xs font-medium"
+              className="gap-1.5 text-xs h-8 rounded-lg bg-[#00363a] text-white hover:bg-[#06494d] shadow-none font-medium"
             >
               <RefreshCwIcon className={cn("h-3.5 w-3.5", isScraping && "animate-spin")} />
               <span>{isScraping ? "Fetching..." : "Fetch Today's Inquiries"}</span>
@@ -1821,7 +2010,7 @@ export function WhatsAppFeatureView({
       </div>
 
       {/* 5. MESSAGES IN TABLE FORMAT */}
-      <DataTableCard className="border border-border/70 shadow-2xs overflow-hidden">
+      <DataTableCard className="overflow-hidden rounded-2xl border border-[#dce7e6] bg-white shadow-none">
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs border-collapse">
               <DataTableHead filled>
@@ -1843,10 +2032,12 @@ export function WhatsAppFeatureView({
                         <MessageSquareIcon className="h-5 w-5 text-muted-foreground" />
                       </div>
                       <p className="font-semibold text-sm text-foreground">
-                        No inquiries captured for today yet
+                        {activeView === "leads" ? "No leads yet" : "No inquiries captured for today yet"}
                       </p>
                       <p className="text-xs text-muted-foreground mt-0.5">
-                        Messages from permitted WhatsApp groups will automatically appear here.
+                        {activeView === "leads"
+                          ? "Use Convert to Lead on an inquiry to add it here."
+                          : "Messages from permitted WhatsApp groups will automatically appear here."}
                       </p>
                     </td>
                   </tr>
@@ -2042,7 +2233,7 @@ export function WhatsAppFeatureView({
   {/* VIEW C: POTENTIAL PROPERTY MATCHES (TABULAR FORMAT)                       */}
   {/* ========================================================================= */}
   {activeView === "matches" && (
-    <div className="space-y-6 animate-in fade-in-50 duration-200">
+    <div className="space-y-6 bg-[#fbfcfa] px-4 py-7 md:px-8 animate-in fade-in-50 duration-200">
       {/* Header & Search Toolbar */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
@@ -2057,25 +2248,6 @@ export function WhatsAppFeatureView({
           </p>
         </div>
 
-        <div className="relative w-full sm:w-80 md:w-96">
-          <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
-          <Input
-            value={matchSearchQuery}
-            onChange={(e) => setMatchSearchQuery(e.target.value)}
-            placeholder="Search by property, contact, locality, or BHK..."
-            className="pl-9 pr-8 h-9 text-xs border-border/80 rounded-lg shadow-2xs"
-          />
-          {matchSearchQuery && (
-            <button
-              type="button"
-              onClick={() => setMatchSearchQuery("")}
-              className="absolute right-2.5 top-1/2 -translate-y-1/2 p-0.5 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-              aria-label="Clear match search"
-            >
-              <XIcon className="h-3.5 w-3.5" />
-            </button>
-          )}
-        </div>
       </div>
 
       {/* Matches Table */}
@@ -2624,14 +2796,12 @@ export function WhatsAppFeatureView({
                   <Button
                     variant="default"
                     size="sm"
-                    onClick={() => {
-                      handleConvertToLead(inspectMessage);
-                      setInspectMessage(null);
-                    }}
+                    onClick={() => void handleConvertToLead(inspectMessage)}
+                    disabled={isConvertingToLead}
                     className="text-xs h-9 px-4 bg-foreground text-background hover:bg-foreground/90 gap-2 font-medium shadow-2xs"
                   >
                     <UserPlusIcon className="h-3.5 w-3.5" />
-                    <span>Convert to Lead</span>
+                    <span>{isConvertingToLead ? "Saving..." : "Convert to Lead"}</span>
                   </Button>
                 ) : (
                   <Badge

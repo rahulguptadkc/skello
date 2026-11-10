@@ -28,6 +28,14 @@ import {
   type ExtractedPropertyListing,
 } from "@/anugraha/llm-property-extractor";
 import { deduplicateCapturedMessages } from "@/anugraha/property-deduplicator";
+import { getSession } from "@/lib/auth/session";
+import {
+  readWhatsAppCaptures,
+  hasWhatsAppCaptures,
+  storeWhatsAppCaptures,
+  markWhatsAppCaptureConvertedToLead,
+} from "@/lib/whatsapp/captured-message-store";
+import { WHATSAPP_SCANNER_ONLY_ORGANISATION_ID } from "@/lib/auth/organisation-features";
 
 export interface CapturedMessageRecord {
   id: string;
@@ -57,6 +65,7 @@ export interface CapturedMessageRecord {
   contact_name?: string;
   contact_numbers?: string[];
   is_active?: boolean;
+  convertedToLead?: boolean;
 }
 
 export interface DiscoveredGroupRecord {
@@ -590,6 +599,14 @@ async function processLiveMessagesIntoBuffer(
   liveMsgs: ReturnType<typeof getLiveCapturedMessages>,
 ) {
   for (const lm of liveMsgs) {
+    const alreadyExtracted = capturedBuffer.some(
+      (message) =>
+        message.id === lm.id ||
+        message.id.startsWith(`${lm.id}-list-`) ||
+        message.id.startsWith(`${lm.id}-item-`),
+    );
+    if (alreadyExtracted) continue;
+
     // 1. Property relevance check (bhk, available, rupee symbol, sell, rent, etc.)
     if (!isPotentialPropertyMessage(lm.text)) {
       continue;
@@ -679,8 +696,38 @@ async function processLiveMessagesIntoBuffer(
 
 export async function POST(req: Request) {
   try {
+    const session = await getSession();
+    if (!session) {
+      return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
+    }
+    if (session.organisation.id !== WHATSAPP_SCANNER_ONLY_ORGANISATION_ID) {
+      return NextResponse.json({ success: false, error: "Forbidden" }, { status: 403 });
+    }
     const body = await req.json();
     refreshCapturedBufferFromDisk();
+
+    if (body.action === "convert_to_lead") {
+      const { messageId } = body as { messageId?: string };
+      if (!messageId) {
+        return NextResponse.json({ success: false, error: "messageId is required" }, { status: 400 });
+      }
+
+      const converted = await markWhatsAppCaptureConvertedToLead(
+        session.organisation.id,
+        messageId,
+      );
+      if (!converted) {
+        return NextResponse.json({ success: false, error: "Inquiry was not found in the database" }, { status: 404 });
+      }
+
+      const bufferedMessage = capturedBuffer.find((message) => message.id === messageId);
+      if (bufferedMessage) {
+        bufferedMessage.convertedToLead = true;
+        saveCapturedBuffer();
+      }
+
+      return NextResponse.json({ success: true, messageId, convertedToLead: true });
+    }
 
     // Action: Toggle Property Active / Inactive status
     if (body.action === "toggle_active" || body.action === "set_status") {
@@ -704,6 +751,11 @@ export async function POST(req: Request) {
       const nextActive = typeof isActive === "boolean" ? isActive : !(item.is_active ?? true);
       item.is_active = nextActive;
       saveCapturedBuffer();
+      await storeWhatsAppCaptures(
+        session.organisation.id,
+        [item],
+        false,
+      );
 
       return NextResponse.json({
         success: true,
@@ -822,6 +874,7 @@ export async function POST(req: Request) {
         addedRecords.push(subRecord);
       });
       saveCapturedBuffer();
+      await storeWhatsAppCaptures(session.organisation.id, addedRecords);
       return NextResponse.json({
         success: true,
         count: addedRecords.length,
@@ -859,6 +912,7 @@ export async function POST(req: Request) {
       capturedBuffer.pop();
     }
     saveCapturedBuffer();
+    await storeWhatsAppCaptures(session.organisation.id, [record]);
 
     return NextResponse.json({
       success: true,
@@ -877,11 +931,27 @@ export async function POST(req: Request) {
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
+  const cronSecret = process.env.CRON_SECRET;
+  const isInternalCron = Boolean(
+    cronSecret && req.headers.get("x-cron-secret") === cronSecret,
+  );
+  const session = isInternalCron ? null : await getSession();
+  const organisationId = isInternalCron
+    ? WHATSAPP_SCANNER_ONLY_ORGANISATION_ID
+    : session?.organisation.id;
+  if (!organisationId) {
+    return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
+  }
+  if (organisationId !== WHATSAPP_SCANNER_ONLY_ORGANISATION_ID) {
+    return NextResponse.json({ success: false, error: "Forbidden" }, { status: 403 });
+  }
   refreshCapturedBufferFromDisk();
   if (deduplicateBuffer()) {
     saveCapturedBuffer();
   }
   const todayOnly = searchParams.get("today") !== "false"; // default true
+  const sinceValue = Number(searchParams.get("since"));
+  const sinceTimestamp = Number.isFinite(sinceValue) && sinceValue > 0 ? sinceValue : null;
   const groupIdsParam = searchParams.get("groups");
   const targetGroupIds = groupIdsParam ? groupIdsParam.split(",") : null;
 
@@ -891,7 +961,8 @@ export async function GET(req: Request) {
       (m) =>
         (Boolean(m.code) || isPotentialPropertyMessage(m.message_text)) &&
         (m.intent !== "general" || Boolean(m.code)) &&
-        (!todayOnly || isTimestampToday(m.raw_timestamp)),
+        (!todayOnly || isTimestampToday(m.raw_timestamp)) &&
+        (sinceTimestamp === null || m.raw_timestamp >= sinceTimestamp),
     );
     const permittedIds = getPermittedGroupIds();
     const effectiveAllowed = permittedIds.length > 0
@@ -906,11 +977,26 @@ export async function GET(req: Request) {
         return groupSet.has(groupId) || groupDigits.has(groupId.split("@")[0].replace(/[^0-9]/g, ""));
       });
     }
-    cachedItems.sort((a, b) => (b.raw_timestamp || 0) - (a.raw_timestamp || 0));
+    if (!(await hasWhatsAppCaptures(organisationId))) {
+      await storeWhatsAppCaptures(organisationId, cachedItems);
+    }
+    const allAllowedIds = groupFilter;
+    let storedItems = await readWhatsAppCaptures({
+      organisationId,
+      since: sinceTimestamp,
+      groupIds: groupFilter,
+    });
+    const allowedDigits = new Set(allAllowedIds.map((id) => id.split("@")[0].replace(/[^0-9]/g, "")));
+    storedItems = storedItems.filter((message) => {
+      const digits = message.group_id.split("@")[0].replace(/[^0-9]/g, "");
+      return allAllowedIds.length === 0 || allAllowedIds.includes(message.group_id) || allowedDigits.has(digits);
+    });
+    if (todayOnly) storedItems = storedItems.filter((message) => isTimestampToday(message.raw_timestamp));
+    storedItems.sort((a, b) => (b.raw_timestamp || 0) - (a.raw_timestamp || 0));
     return NextResponse.json({
       success: true,
       data: {
-        count: cachedItems.length,
+        count: storedItems.length,
         allowedGroupCount: effectiveAllowed.length,
         permittedGroupIds: effectiveAllowed,
         isConnected: hasSavedCredentials(),
@@ -918,7 +1004,10 @@ export async function GET(req: Request) {
         ...(globalThis.__skeloDiscoveredGroups?.length
           ? { discoveredGroups: globalThis.__skeloDiscoveredGroups }
           : {}),
-        items: cachedItems,
+        items: storedItems.map((message) => ({
+          ...message,
+          is_today: isTimestampToday(message.raw_timestamp),
+        })),
       },
     });
   }
@@ -953,6 +1042,8 @@ export async function GET(req: Request) {
     liveMsgs.map((m) => m.groupId.split("@")[0].replace(/[^0-9]/g, "")).filter(Boolean),
   );
 
+  const messageIdsBeforeProcessing = new Set(capturedBuffer.map((message) => message.id));
+
   // If a permitted group has real captured messages, purge old mock seeds and non-property chatter
   capturedBuffer = capturedBuffer.filter((m) => {
     if (m.id.startsWith("seed-")) {
@@ -979,47 +1070,60 @@ export async function GET(req: Request) {
   deduplicateBuffer();
   saveCapturedBuffer();
 
-  // Filter buffer to only selected groups, today's messages, and valid property records
-  let filtered = capturedBuffer.filter(
-    (m) =>
-      (Boolean(m.code) || isPotentialPropertyMessage(m.message_text)) &&
-      (m.intent !== "general" || m.code),
+  const eligibleBuffer = capturedBuffer.filter(
+    (message) =>
+      (Boolean(message.code) || isPotentialPropertyMessage(String(message.message_text || ""))) &&
+      (message.intent !== "general" || Boolean(message.code)),
   );
+  // Seed prior disk history once; after that, persist only IDs added during
+  // this capture cycle instead of sending the entire in-memory buffer hourly.
+  const isInitialDatabaseSeed = !(await hasWhatsAppCaptures(organisationId));
+  const bufferForStorage = isInitialDatabaseSeed
+    ? eligibleBuffer
+    : eligibleBuffer.filter((message) => !messageIdsBeforeProcessing.has(message.id));
+  await storeWhatsAppCaptures(organisationId, bufferForStorage);
 
-  if (todayOnly) {
-    filtered = filtered.filter((m) => isTimestampToday(m.raw_timestamp));
-  }
-
-  if (targetGroupIds && targetGroupIds.length > 0) {
-    const targetDigits = new Set(
-      targetGroupIds.map((id) => id.split("@")[0].replace(/[^0-9]/g, "")).filter(Boolean),
-    );
-    const set = new Set(targetGroupIds.map((id) => id.replace(/:.*@/, "@").toLowerCase()));
-    filtered = filtered.filter((m) => {
-      const gid = m.group_id.replace(/:.*@/, "@").toLowerCase();
-      const gidDigits = gid.split("@")[0].replace(/[^0-9]/g, "");
-      return set.has(gid) || (gidDigits && targetDigits.has(gidDigits));
-    });
-  } else if (effectiveAllowed.size > 0) {
-    const allowedDigits = new Set(
-      Array.from(effectiveAllowed).map((id) => id.split("@")[0].replace(/[^0-9]/g, "")).filter(Boolean),
-    );
-    const allowedSet = new Set(
-      Array.from(effectiveAllowed).map((id) => id.replace(/:.*@/, "@").toLowerCase()),
-    );
-    filtered = filtered.filter((m) => {
-      const gid = m.group_id.replace(/:.*@/, "@").toLowerCase();
-      const gidDigits = gid.split("@")[0].replace(/[^0-9]/g, "");
-      return allowedSet.has(gid) || (gidDigits && allowedDigits.has(gidDigits));
+  // The scheduled job only ingests and persists messages. It does not need to
+  // read the entire stored history back just to return an HTTP response.
+  if (isInternalCron) {
+    return NextResponse.json({
+      success: true,
+      data: {
+        count: bufferForStorage.length,
+        fetchedAt: capturedBufferUpdatedAt,
+      },
     });
   }
 
-  filtered.sort((a, b) => (b.raw_timestamp || 0) - (a.raw_timestamp || 0));
+  // `since` is an inclusive timestamp cursor. The client merges by message ID,
+  // so the boundary row may safely be included to avoid missing equal-time posts.
+  const readGroupIds = targetGroupIds?.length ? targetGroupIds : Array.from(effectiveAllowed);
+  const readGroupDigits = new Set(
+    readGroupIds.map((id) => id.split("@")[0].replace(/[^0-9]/g, "")).filter(Boolean),
+  );
+  let storedFiltered = (await readWhatsAppCaptures({
+    organisationId,
+    since: sinceTimestamp,
+    groupIds: readGroupIds,
+  })).filter((message) => {
+    const groupDigits = message.group_id.split("@")[0].replace(/[^0-9]/g, "");
+    const isAllowedGroup =
+      readGroupIds.length === 0 ||
+      readGroupIds.some((id) => id.replace(/:.*@/, "@").toLowerCase() === message.group_id.replace(/:.*@/, "@").toLowerCase()) ||
+      (groupDigits && readGroupDigits.has(groupDigits));
+    return (
+      isAllowedGroup &&
+      (Boolean(message.code) || isPotentialPropertyMessage(String(message.message_text || ""))) &&
+      (message.intent !== "general" || Boolean(message.code)) &&
+      (!todayOnly || isTimestampToday(message.raw_timestamp))
+    );
+  });
+  storedFiltered.sort((a, b) => (b.raw_timestamp || 0) - (a.raw_timestamp || 0));
 
   return NextResponse.json({
     success: true,
     data: {
-      count: filtered.length,
+      count: storedFiltered.length,
       allowedGroupCount:
         permittedIds.length > 0 ? permittedIds.length : allowedGroupIds.size,
       permittedGroupIds:
@@ -1028,7 +1132,10 @@ export async function GET(req: Request) {
       isConnected,
       cycleInfo: get9amCycleInfo(),
       fetchedAt: capturedBufferUpdatedAt,
-      items: filtered,
+      items: storedFiltered.map((message) => ({
+        ...message,
+        is_today: isTimestampToday(message.raw_timestamp),
+      })),
     },
   });
 }

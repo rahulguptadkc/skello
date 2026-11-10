@@ -42,7 +42,9 @@ async function runScheduledWhatsAppCapture() {
 
   try {
     const response = await getWhatsAppCapture(
-      new Request("http://internal/api/whatsapp-capture?today=true"),
+      new Request("http://internal/api/whatsapp-capture?today=false", {
+        headers: { "x-cron-secret": process.env.CRON_SECRET || "" },
+      }),
     );
     if (!response.ok) {
       lastScheduledWhatsAppSlot = "";
