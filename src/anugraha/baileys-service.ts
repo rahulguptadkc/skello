@@ -61,6 +61,14 @@ declare global {
   // eslint-disable-next-line no-var
   var __skeloWhatsAppStarting: boolean | undefined;
   // eslint-disable-next-line no-var
+  var __skeloWhatsAppConnectionReplaced: boolean | undefined;
+  // eslint-disable-next-line no-var
+  var __skeloWhatsAppReconnectAttempts: number | undefined;
+  // eslint-disable-next-line no-var
+  var __skeloWhatsAppReconnectAt: number | undefined;
+  // eslint-disable-next-line no-var
+  var __skeloWhatsAppReconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  // eslint-disable-next-line no-var
   var __skeloDiscoveredGroups: DiscoveredWhatsAppGroup[] | undefined;
   // eslint-disable-next-line no-var
   var __skeloPermittedGroups: Set<string> | undefined;
@@ -79,6 +87,31 @@ const CREDS_FILE = path.join(AUTH_DIR, "creds.json");
 const PERMITTED_FILE = path.join(AUTH_DIR, "permitted_groups.json");
 const CAPTURED_MESSAGES_FILE = path.join(AUTH_DIR, "captured_messages.json");
 const DISCOVERED_GROUPS_FILE = path.join(AUTH_DIR, "discovered_groups.json");
+
+/**
+ * Clear only Baileys' linked-device credentials. The same directory also
+ * stores app data (permitted groups, discovered groups, and captured messages),
+ * so removing the directory itself would make a rescan look like a fresh setup.
+ */
+function clearWhatsAppCredentialsFromDisk() {
+  try {
+    if (!fs.existsSync(AUTH_DIR)) return;
+
+    const appDataFiles = new Set([
+      path.basename(PERMITTED_FILE),
+      path.basename(CAPTURED_MESSAGES_FILE),
+      path.basename(DISCOVERED_GROUPS_FILE),
+    ]);
+
+    for (const entry of fs.readdirSync(AUTH_DIR, { withFileTypes: true })) {
+      if (appDataFiles.has(entry.name) || entry.name.startsWith("lid-mapping-")) continue;
+      const entryPath = path.join(AUTH_DIR, entry.name);
+      if (entry.isFile()) fs.rmSync(entryPath, { force: true });
+    }
+  } catch (err) {
+    console.error("[WhatsApp Baileys] Failed to clear linked-device credentials:", err);
+  }
+}
 
 export function loadDiscoveredGroupsFromDisk(): DiscoveredWhatsAppGroup[] {
   try {
@@ -589,11 +622,19 @@ export async function refreshGroupMetadata(groupId: string): Promise<any> {
 export async function startWhatsAppService(): Promise<WhatsAppServiceState> {
   const currentState = getWhatsAppServiceState();
 
-  // If already connected or starting, return current state
-  if (currentState.status === "connected" && globalThis.__skeloWhatsAppSock) {
+  // Never create a second socket while this process already owns one.
+  if (globalThis.__skeloWhatsAppSock) {
     return currentState;
   }
   if (globalThis.__skeloWhatsAppStarting) {
+    return currentState;
+  }
+  if (currentState.status === "reconnecting" && (globalThis.__skeloWhatsAppReconnectAt || 0) > Date.now()) {
+    return currentState;
+  }
+  // A 440 close means another process owns this account. Do not fight it by
+  // repeatedly opening the same credentials; an explicit reconnect resets this.
+  if (globalThis.__skeloWhatsAppConnectionReplaced && hasSavedCredentials()) {
     return currentState;
   }
 
@@ -603,16 +644,6 @@ export async function startWhatsAppService(): Promise<WhatsAppServiceState> {
   try {
     if (!fs.existsSync(AUTH_DIR)) {
       fs.mkdirSync(AUTH_DIR, { recursive: true });
-    }
-
-    // Terminate any previous socket reference to avoid duplicates
-    if (globalThis.__skeloWhatsAppSock) {
-      try {
-        globalThis.__skeloWhatsAppSock.end(undefined);
-      } catch {
-        // ignore
-      }
-      globalThis.__skeloWhatsAppSock = null;
     }
 
     const { state: authState, saveCreds } =
@@ -651,6 +682,13 @@ export async function startWhatsAppService(): Promise<WhatsAppServiceState> {
       // WhatsApp connection opened successfully
       if (connection === "open") {
         currentState.status = "connected";
+        globalThis.__skeloWhatsAppConnectionReplaced = false;
+        globalThis.__skeloWhatsAppReconnectAttempts = 0;
+        globalThis.__skeloWhatsAppReconnectAt = 0;
+        if (globalThis.__skeloWhatsAppReconnectTimer) {
+          clearTimeout(globalThis.__skeloWhatsAppReconnectTimer);
+          globalThis.__skeloWhatsAppReconnectTimer = undefined;
+        }
         currentState.qrDataUrl = null;
         currentState.rawQr = null;
         currentState.connectedAt = new Date().toISOString();
@@ -688,8 +726,9 @@ export async function startWhatsAppService(): Promise<WhatsAppServiceState> {
         // Code 440: Another process opened WhatsApp with these credentials.
         if (connectionReplaced) {
           console.warn(
-            "[WhatsApp Baileys] Session opened by another process (code 440: connectionReplaced). Cooling down before auto-reconnect...",
+            "[WhatsApp Baileys] Session is owned by another process (code 440). Stopping reconnect attempts to prevent duplicate scanners.",
           );
+          globalThis.__skeloWhatsAppConnectionReplaced = true;
           if (hasSavedCredentials()) {
             const saved = getSavedCredentialsInfo();
             currentState.status = "connected";
@@ -700,20 +739,12 @@ export async function startWhatsAppService(): Promise<WhatsAppServiceState> {
           }
           globalThis.__skeloWhatsAppSock = null;
           globalThis.__skeloWhatsAppStarting = false;
-          setTimeout(() => {
-            if (!globalThis.__skeloWhatsAppSock && hasSavedCredentials()) {
-              startWhatsAppService().catch(console.error);
-            }
-          }, 12000);
+          globalThis.__skeloWhatsAppReconnectAt = 0;
           return;
         }
 
         if (loggedOut) {
-          try {
-            fs.rmSync(AUTH_DIR, { recursive: true, force: true });
-          } catch {
-            // ignore
-          }
+          clearWhatsAppCredentialsFromDisk();
           currentState.status = "disconnected";
           currentState.qrDataUrl = null;
           currentState.rawQr = null;
@@ -721,16 +752,26 @@ export async function startWhatsAppService(): Promise<WhatsAppServiceState> {
           currentState.connectedName = null;
           globalThis.__skeloWhatsAppSock = null;
           globalThis.__skeloWhatsAppStarting = false;
-          setTimeout(() => {
+          globalThis.__skeloWhatsAppReconnectAttempts = 0;
+          globalThis.__skeloWhatsAppReconnectAt = Date.now() + 800;
+          globalThis.__skeloWhatsAppReconnectTimer = setTimeout(() => {
+            globalThis.__skeloWhatsAppReconnectAt = 0;
+            globalThis.__skeloWhatsAppReconnectTimer = undefined;
             startWhatsAppService().catch(console.error);
           }, 800);
         } else {
           currentState.status = "reconnecting";
           globalThis.__skeloWhatsAppSock = null;
           globalThis.__skeloWhatsAppStarting = false;
-          setTimeout(() => {
+          const attempts = (globalThis.__skeloWhatsAppReconnectAttempts || 0) + 1;
+          globalThis.__skeloWhatsAppReconnectAttempts = attempts;
+          const reconnectDelayMs = Math.min(120_000, 2_000 * 2 ** Math.min(attempts - 1, 6));
+          globalThis.__skeloWhatsAppReconnectAt = Date.now() + reconnectDelayMs;
+          globalThis.__skeloWhatsAppReconnectTimer = setTimeout(() => {
+            globalThis.__skeloWhatsAppReconnectAt = 0;
+            globalThis.__skeloWhatsAppReconnectTimer = undefined;
             startWhatsAppService().catch(console.error);
-          }, 2500);
+          }, reconnectDelayMs);
         }
       }
     });
@@ -863,13 +904,7 @@ export async function disconnectWhatsAppService(): Promise<WhatsAppServiceState>
     // ignore
   }
 
-  try {
-    if (fs.existsSync(AUTH_DIR)) {
-      fs.rmSync(AUTH_DIR, { recursive: true, force: true });
-    }
-  } catch {
-    // ignore
-  }
+  clearWhatsAppCredentialsFromDisk();
 
   currentState.status = "disconnected";
   currentState.qrDataUrl = null;
@@ -878,8 +913,12 @@ export async function disconnectWhatsAppService(): Promise<WhatsAppServiceState>
   currentState.connectedName = null;
   currentState.connectedAt = null;
   globalThis.__skeloWhatsAppStarting = false;
-  globalThis.__skeloDiscoveredGroups = [];
-  globalThis.__skeloLiveMessages = [];
-
+  globalThis.__skeloWhatsAppConnectionReplaced = false;
+  globalThis.__skeloWhatsAppReconnectAttempts = 0;
+  globalThis.__skeloWhatsAppReconnectAt = 0;
+  if (globalThis.__skeloWhatsAppReconnectTimer) {
+    clearTimeout(globalThis.__skeloWhatsAppReconnectTimer);
+    globalThis.__skeloWhatsAppReconnectTimer = undefined;
+  }
   return currentState;
 }

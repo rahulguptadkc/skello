@@ -1,6 +1,7 @@
 import "server-only";
 
 import { createAdminClient } from "@/lib/supabase/admin";
+import { formatWhatsAppTimestamp } from "@/lib/whatsapp/timestamp";
 
 export interface StoredWhatsAppCapture {
   id: string;
@@ -85,7 +86,7 @@ export async function storeWhatsAppCaptures<T extends WhatsAppCaptureInput>(
         budget_or_price: asNullableString(payload.budget_or_price),
         project_name: asNullableString(payload.project_name),
         location: asNullableString(payload.location),
-        timestamp_label: asNullableString(payload.timestamp),
+        timestamp_label: formatWhatsAppTimestamp(message.raw_timestamp),
         raw_timestamp: Math.trunc(message.raw_timestamp),
         code: asNullableString(payload.code),
         property_type: asNullableString(payload.property_type),

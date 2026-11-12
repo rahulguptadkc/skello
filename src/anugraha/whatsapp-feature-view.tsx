@@ -88,6 +88,7 @@ import {
 } from "./openai-lead-matcher";
 import { matchPropertiesByRules } from "./property-script-matcher";
 import { deduplicateCapturedMessages } from "./property-deduplicator";
+import { formatWhatsAppTimestamp } from "@/lib/whatsapp/timestamp";
 import { ClientPagination } from "@/components/app/pagination";
 import { cn } from "@/lib/utils";
 import { QRCodeSvg } from "./qr-code-svg";
@@ -362,9 +363,9 @@ export function WhatsAppFeatureView({
   }, []);
 
   // Check / Sync Session Status from /api/qr (Baileys Live Stream)
-  const checkSessionStatus = React.useCallback(async () => {
+  const checkSessionStatus = React.useCallback(async (signal?: AbortSignal) => {
     try {
-      const res = await fetch("/api/qr");
+      const res = await fetch("/api/qr", { cache: "no-store", signal });
       const json = await res.json();
       if (json.status === "connected") {
         setSessionStatus("connected");
@@ -386,15 +387,17 @@ export function WhatsAppFeatureView({
     }
   }, []);
 
-  // Poll /api/qr every 2.5s ONLY while waiting for phone scan; stops forever once connected
+  // Poll QR status slowly while pairing is pending; stop once connected.
   React.useEffect(() => {
     let timer: NodeJS.Timeout;
     let isMounted = true;
+    let requestController: AbortController | null = null;
 
     async function poll() {
-      const statusResult = await checkSessionStatus();
+      requestController = new AbortController();
+      const statusResult = await checkSessionStatus(requestController.signal);
       if (isMounted && statusResult !== "connected") {
-        timer = setTimeout(poll, 2500);
+        timer = setTimeout(poll, 15_000);
       }
     }
 
@@ -405,6 +408,7 @@ export function WhatsAppFeatureView({
     return () => {
       isMounted = false;
       if (timer) clearTimeout(timer);
+      requestController?.abort();
     };
   }, [checkSessionStatus, sessionStatus]);
 
@@ -510,7 +514,9 @@ export function WhatsAppFeatureView({
               budgetOrPrice: item.budget_or_price,
               location: item.location,
               tags: item.tags,
-              timestamp: item.timestamp,
+              timestamp: item.raw_timestamp != null
+                ? formatWhatsAppTimestamp(item.raw_timestamp)
+                : item.timestamp,
               rawTimestamp: item.raw_timestamp,
               isToday: item.is_today,
               code: item.code,
@@ -574,12 +580,20 @@ export function WhatsAppFeatureView({
           }
 
           if (Array.isArray(json.data.discoveredGroups)) {
-            setAvailableGroups(json.data.discoveredGroups);
+            const discoveredGroups = json.data.discoveredGroups as WhatsAppGroupOption[];
+            setAvailableGroups(discoveredGroups);
             if (Array.isArray(json.data.permittedGroupIds) && json.data.permittedGroupIds.length > 0) {
-              setSelectedGroupIds(json.data.permittedGroupIds);
-              setConfirmedGroupIds(json.data.permittedGroupIds);
-            } else if (json.data.discoveredGroups.length > 0) {
-              const allIds = json.data.discoveredGroups.map((g: WhatsAppGroupOption) => g.id);
+              const discoveredIds = new Set(discoveredGroups.map((group) => group.id));
+              // Old saved permissions can outlive WhatsApp's current group list.
+              // Keep only groups we can currently identify, so counters and the
+              // edit selection describe the groups that can actually be scraped.
+              const permittedIds = discoveredGroups.length > 0
+                ? json.data.permittedGroupIds.filter((id: string) => discoveredIds.has(id))
+                : json.data.permittedGroupIds;
+              setSelectedGroupIds(permittedIds);
+              setConfirmedGroupIds(permittedIds);
+            } else if (discoveredGroups.length > 0) {
+              const allIds = discoveredGroups.map((g) => g.id);
               setSelectedGroupIds(allIds);
               setConfirmedGroupIds(allIds);
             }
@@ -655,7 +669,9 @@ export function WhatsAppFeatureView({
         budgetOrPrice: item.budget_or_price,
         location: item.location,
         tags: item.tags || [],
-        timestamp: item.timestamp,
+        timestamp: item.raw_timestamp != null
+          ? formatWhatsAppTimestamp(item.raw_timestamp)
+          : item.timestamp,
         rawTimestamp: item.raw_timestamp,
         isToday: item.is_today,
         code: item.code,
@@ -703,7 +719,13 @@ export function WhatsAppFeatureView({
       });
       const json = await res.json();
       if (json.success && Array.isArray(json.groups)) {
-        setAvailableGroups(json.groups);
+        const discoveredGroups = json.groups as WhatsAppGroupOption[];
+        setAvailableGroups(discoveredGroups);
+        if (discoveredGroups.length > 0) {
+          const discoveredIds = new Set(discoveredGroups.map((group) => group.id));
+          setSelectedGroupIds((previous) => previous.filter((id) => discoveredIds.has(id)));
+          setConfirmedGroupIds((previous) => previous.filter((id) => discoveredIds.has(id)));
+        }
         if (json.groups.length > 0) {
           toast.success(`Discovered ${json.groups.length} groups from your connected WhatsApp!`);
         } else {
@@ -2020,7 +2042,7 @@ export function WhatsAppFeatureView({
                 <th className="px-3 py-3 min-w-[110px]">Budget / Price</th>
                 <th className="px-3 py-3 min-w-[130px]">Project Name</th>
                 <th className="px-3 py-3 min-w-[130px]">Location</th>
-                <th className="px-3 py-3 min-w-[90px]">Time</th>
+                <th className="px-3 py-3 min-w-[145px]">Date &amp; Time</th>
                 <th className="px-4 py-3 text-right min-w-[100px]">Action</th>
               </DataTableHead>
 
@@ -2185,9 +2207,11 @@ export function WhatsAppFeatureView({
                           )}
                         </td>
 
-                        {/* 7. Timestamp */}
+                        {/* 7. Date and time (IST) */}
                         <td className="px-3 py-3 align-middle text-[11px] text-muted-foreground whitespace-nowrap">
-                          {msg.timestamp}
+                          {msg.rawTimestamp != null
+                            ? formatWhatsAppTimestamp(msg.rawTimestamp)
+                            : msg.timestamp}
                         </td>
 
                         {/* 8. Action: View Message */}

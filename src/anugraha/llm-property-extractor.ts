@@ -147,6 +147,32 @@ export function isPotentialPropertyMessage(text: string): boolean {
   return PROPERTY_KEYWORDS.some((rx) => rx.test(text));
 }
 
+function hasExplicitSellSupplyCue(text: string): boolean {
+  return /\b(?:sell|selling|for\s+sale|available\s+for\s+sale)\b/i.test(text);
+}
+
+function applyLeadingSellIntent<T extends ExtractedPropertyListing>(
+  messageText: string,
+  listings: T[],
+): T[] {
+  const firstLines = messageText
+    .split(/\r?\n/)
+    .map((line) => line.replace(/[\*_`]/g, "").trim())
+    .filter(Boolean)
+    .slice(0, 3);
+  const hasLeadingSellHeading = firstLines.some((line) =>
+    /^(?:(?:urgent|immediate)\s+)?(?:requirement|require)\s*[-:–]?\s*sell\b/i.test(line) ||
+    /^(?:(?:urgent|immediate)\s+)?(?:available\s+for\s+sale|for\s+sale|sell|selling)\b/i.test(line),
+  );
+
+  if (!hasLeadingSellHeading) return listings;
+  return listings.map((listing) => ({
+    ...listing,
+    intent: "AS",
+    code: `AS${listing.property_type}`,
+  }));
+}
+
 export const BROKER_EXTRACTOR_SYSTEM_PROMPT = `# ROLE
 
 You are a real estate data extractor for a Bangalore property broker. The broker sits in many WhatsApp groups where sub brokers post what their clients have (supply) and what their clients want (demand). You read ONE WhatsApp message at a time and turn every property listing or requirement inside it into a structured record. A Python script later uses these records to remove duplicates and match demand against supply, so accuracy and consistency matter more than anything else.
@@ -194,35 +220,46 @@ One message often contains many listings. Create a separate record for EACH one.
 - A line listing several places with no separate details ("Indiranagar, 3 options: off 100 Ft Road, off CMH Road, Krishna Temple Road") is ONE record with all places in 'streets', and 'confidence: "low"' if size and price are missing.
 - "2 BHK and 3 BHK available" with different sizes or prices is two records.
 
-# STEP 3: INTENT (first two letters of the code)
+# STEP 3: INTENT CODE (the complete three-letter code)
+
+Every listing MUST use exactly one of these 16 codes. The first two letters are the deal intent and the last letter is the property type. Do not invent, abbreviate, or return any other code or property type.
+
+| Intent | Allowed codes | Meaning |
+|---|---|---|
+| Available for rent | ARL, ARH, ARA, ARF | Land, house, apartment, flat available for rent |
+| Available for sale | ASL, ASH, ASA, ASF | Land, house, apartment, flat available for sale |
+| Wants to rent | WRL, WRH, WRA, WRF | Land, house, apartment, flat wanted for rent |
+| Wants to buy | WBL, WBH, WBA, WBF | Land, house, apartment, flat wanted for purchase |
+
+The 'intent' field must be exactly the first two letters of 'code' (AR, AS, WR, or WB), and 'property_type' must be exactly the last letter (L, H, A, or F). The 'code', 'intent', and 'property_type' must agree. Never return V, O, C, B or any other type letter. If the property is explicitly a villa, classify it as H (house). If the message only describes a property type outside land, house, apartment, or flat and cannot be represented accurately, return 'message_type: "ignore"' with an empty 'listings' array.
 
 | Intent | Meaning | Typical words |
 |---|---|---|
 | AR | Available for rent or lease | "available for rent", "to let", "rental availability", "for lease" |
 | AS | Available for sale (including JD / JV offers by landowners) | "for sale", "available", "selling price", "new flats" |
 | WR | Wants to rent or lease | "rental requirement", "looking for rent", "client wants on rent" |
-| WB | Wants to buy | "requirement", "required", "require", "need", "looking for", "purchase", "buyer" |
+| WB | Wants to buy | "wants to buy", "looking to buy", "purchase requirement", "buyer requirement" |
 
 Rules:
-- "Requirement", "required", "need", "looking for" on their own mean DEMAND. Decide rent vs buy from words like rent, lease, budget per month (WR) or purchase, buy, registration, budget in crores (WB).
+- Explicit transaction words take precedence over generic words like "requirement". In particular, a heading such as "URGENT REQUIREMENT - SELL" or "REQUIREMENT: SELL" means the property is available for sale (AS), not that someone wants to buy (WB).
+- A leading message heading applies to every listing and every OR alternative beneath it until another explicit intent heading appears. Do not independently reinterpret one alternative under a shared "SELL" heading as a buyer requirement because it contains words such as "requirement", "budget", or a price.
+- Use WB when the message explicitly asks to buy/purchase or describes a buyer requirement. A generic "requirement" or a budget in crores alone is not enough to infer WB when the text says "sell" or "for sale".
+- A rental requirement or "wanted on rent" is WR; a property explicitly available "for rent", "to let", or "for lease" is AR.
 - "Available", "for sale", "inventory", "options" on their own mean SUPPLY.
-- If the message gives no clue between rent and sale, use the price: a monthly figure means rent, a crore or per-sqft or per-acre figure means sale.
+- If the message gives no clue between rent and sale, a monthly price can suggest rent and a per-sqft or per-acre quote can suggest sale. A total crore budget alone does not determine whether the message is supply or demand.
 
 # STEP 4: PROPERTY TYPE (last letter of the code)
 
 | Letter | Type | Examples |
 |---|---|---|
-| A | Apartment / flat | "flat", "apartment", "3 BHK in <project>" |
-| V | Villa / row house | "villa", "row house" |
-| H | Independent house / builder floor / plot with a house | "independent house", "GF house", "duplex house", "plot with 5 BHK house", "bungalow" |
-| L | Land / plot (no house worth counting) | "site", "plot", "land", "acres", "guntas", "40x60 plot" |
-| O | Office space | "office space", "IT space" |
-| C | Any other commercial space, or commercial where the kind is not clear | "commercial space", "bare shell", "shop", "showroom", "warehouse", a need that mixes office with kitchen or production use |
-| B | Whole building | "entire building", "tenanted building", "PG building", "commercial building" |
+| F | Flat | "flat", "apartment flat" |
+| A | Apartment | "apartment", "3 BHK in <project>" when not explicitly called a flat |
+| H | House | "independent house", "GF house", "duplex house", "villa", "row house", "plot with 5 BHK house", "bungalow" |
+| L | Land | "site", "plot", "land", "acres", "guntas", "40x60 plot" without a house |
 
 Rules:
-- 'code' = intent + letter, for example "ARA", "WBL", "ASH".
-- A residential unit with a BHK count and no type word: use A and set 'type_assumed: true'.
+- 'code' must be one of ARL, ARH, ARA, ARF, ASL, ASH, ASA, ASF, WRL, WRH, WRA, WRF, WBL, WBH, WBA, WBF.
+- A residential unit with a BHK count and no explicit flat/house word: use A (apartment) and set 'type_assumed: true'.
 - For land, the code stays L. Put the use in 'land_use'.
 
 # STEP 5: DEAL TYPE
@@ -321,7 +358,7 @@ Use these conversions. Do not use any other values.
 `;
 
 const CACHE_FILE = path.join(process.cwd(), "auth", "llm_property_cache.json");
-const EXTRACTOR_PROMPT_VERSION = "listing-evidence-v2";
+const EXTRACTOR_PROMPT_VERSION = "intent-code-whitelist-v3";
 
 function loadLLMCache(): Record<string, ExtractedMessageResponse> {
   try {
@@ -415,6 +452,8 @@ export function ruleBasedPropertyExtract(
       } else if (lower.includes("jv proposal") || lower.includes("jv ")) {
         itemIntent = "AS";
         dealType = "JV";
+      } else if (hasExplicitSellSupplyCue(itemText)) {
+        itemIntent = "AS";
       } else if (lower.includes("require") || lower.includes("purchase") || lower.includes("need")) {
         itemIntent = "WB";
       } else if (lower.includes("for sale") || lower.includes("available for sale")) {
@@ -520,7 +559,9 @@ export function ruleBasedPropertyExtract(
   if (listings.length === 0) {
     const lower = text.toLowerCase();
     let intent: BrokerDealIntent = "AS";
-    if (lower.includes("purchase") || lower.includes("requirement") || lower.includes("buyer")) {
+    if (hasExplicitSellSupplyCue(text)) {
+      intent = "AS";
+    } else if (lower.includes("purchase") || lower.includes("buy") || lower.includes("requirement") || lower.includes("buyer")) {
       intent = "WB";
     } else if (lower.includes("rent requirement") || lower.includes("wants on rent")) {
       intent = "WR";
@@ -685,7 +726,10 @@ export async function extractPropertyListingsWithLLM(
   if (cache[cacheKey]) {
     const cached = cache[cacheKey];
     if (cached.message_type === "ignore") return [];
-    const listings = normalizePerAcrePricing(text, cached.listings || []);
+    const listings = applyLeadingSellIntent(
+      text,
+      normalizePerAcrePricing(text, cached.listings || []),
+    );
     cache[cacheKey] = { ...cached, listings };
     saveLLMCache(cache);
     return listings;
@@ -702,10 +746,13 @@ ${text}
 """`;
 
   if (apiKey) {
+    const controller = new AbortController();
+    const timeoutMs = Math.max(
+      5_000,
+      Number.parseInt(process.env.OPENAI_EXTRACTION_TIMEOUT_MS || "45000", 10) || 45_000,
+    );
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 25000);
-
       const res = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: {
@@ -731,7 +778,10 @@ ${text}
         const content = data.choices?.[0]?.message?.content;
         if (content) {
           const parsed = JSON.parse(content) as ExtractedMessageResponse;
-          parsed.listings = normalizePerAcrePricing(text, parsed.listings || []);
+          parsed.listings = applyLeadingSellIntent(
+            text,
+            normalizePerAcrePricing(text, parsed.listings || []),
+          );
           cache[cacheKey] = parsed;
           saveLLMCache(cache);
 
@@ -744,13 +794,22 @@ ${text}
         console.warn("[OpenAI Broker Extractor] API error:", res.status, await res.text());
       }
     } catch (err) {
-      console.warn("[OpenAI Broker Extractor] Network or LLM error, using fallback:", err);
+      if (err instanceof Error && err.name === "AbortError") {
+        console.warn("[OpenAI Broker Extractor] Request timed out; using rule-based fallback.");
+      } else {
+        console.warn("[OpenAI Broker Extractor] Request failed; using rule-based fallback:", err);
+      }
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
   // Fallback to rule-based extractor
   const fallback = ruleBasedPropertyExtract(msg);
-  fallback.listings = normalizePerAcrePricing(text, fallback.listings || []);
+  fallback.listings = applyLeadingSellIntent(
+    text,
+    normalizePerAcrePricing(text, fallback.listings || []),
+  );
   cache[cacheKey] = fallback;
   saveLLMCache(cache);
 

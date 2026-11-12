@@ -35,6 +35,7 @@ import {
   storeWhatsAppCaptures,
   markWhatsAppCaptureConvertedToLead,
 } from "@/lib/whatsapp/captured-message-store";
+import { formatWhatsAppTimestamp } from "@/lib/whatsapp/timestamp";
 import { WHATSAPP_SCANNER_ONLY_ORGANISATION_ID } from "@/lib/auth/organisation-features";
 
 export interface CapturedMessageRecord {
@@ -307,10 +308,7 @@ function generateTodaysMockMessages(): CapturedMessageRecord[] {
       location: classified.location,
       project_name: extractProjectName(p.message_text) || undefined,
       tags: classified.tags,
-      timestamp: new Date(rawTs).toLocaleTimeString([], {
-        hour: "numeric",
-        minute: "2-digit",
-      }),
+      timestamp: formatWhatsAppTimestamp(rawTs),
       raw_timestamp: rawTs,
       is_today: true,
     };
@@ -436,10 +434,7 @@ function ensureMessagesForPermittedGroups(
             project_name: extractProjectName(item.text) || extractProjectName(p.text) || undefined,
             location: item.location !== "Bangalore" ? item.location : undefined,
             tags: [item.intent, item.config, item.location].filter(Boolean),
-            timestamp: new Date(subTs).toLocaleTimeString([], {
-              hour: "numeric",
-              minute: "2-digit",
-            }),
+            timestamp: formatWhatsAppTimestamp(subTs),
             raw_timestamp: subTs,
             is_today: true,
           };
@@ -479,10 +474,7 @@ function ensureMessagesForPermittedGroups(
             project_name: extractProjectName(p.text) || undefined,
             location: classified.location,
             tags: classified.tags,
-            timestamp: new Date(rawTs).toLocaleTimeString([], {
-              hour: "numeric",
-              minute: "2-digit",
-            }),
+            timestamp: formatWhatsAppTimestamp(rawTs),
             raw_timestamp: rawTs,
             is_today: true,
           });
@@ -665,10 +657,7 @@ async function processLiveMessagesIntoBuffer(
           listing.property_type,
           ...(listing.localities || []),
         ].filter(Boolean),
-        timestamp: new Date(subTs).toLocaleTimeString([], {
-          hour: "numeric",
-          minute: "2-digit",
-        }),
+        timestamp: formatWhatsAppTimestamp(subTs),
         raw_timestamp: subTs,
         is_today: isTimestampToday(subTs),
         code: listing.code,
@@ -863,10 +852,7 @@ export async function POST(req: Request) {
           project_name: extractProjectName(item.text) || extractProjectName(message_text) || undefined,
           location: item.location !== "Bangalore" ? item.location : undefined,
           tags: [item.intent, item.config, item.location].filter(Boolean),
-          timestamp: new Date(rawTs + subIdx * 1000).toLocaleTimeString([], {
-            hour: "numeric",
-            minute: "2-digit",
-          }),
+          timestamp: formatWhatsAppTimestamp(rawTs + subIdx * 1000),
           raw_timestamp: rawTs + subIdx * 1000,
           is_today: isToday,
         };
@@ -898,10 +884,7 @@ export async function POST(req: Request) {
       location: classified.location,
       project_name: body.project_name || extractProjectName(message_text) || undefined,
       tags: classified.tags,
-      timestamp: new Date(rawTs).toLocaleTimeString([], {
-        hour: "numeric",
-        minute: "2-digit",
-      }),
+      timestamp: formatWhatsAppTimestamp(rawTs),
       raw_timestamp: rawTs,
       is_today: isToday,
     };
